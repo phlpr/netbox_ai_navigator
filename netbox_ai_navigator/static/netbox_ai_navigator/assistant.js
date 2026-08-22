@@ -377,6 +377,27 @@
     return message;
   }
 
+  function addLoadingMessage() {
+    const translatedLabel = translate("thinking");
+    const visibleLabel = translatedLabel.replace(/[.\s…]+$/u, "") || translatedLabel;
+    const loading = addMessage("assistant", "", "loading");
+    const label = document.createElement("span");
+    const dots = document.createElement("span");
+
+    loading.setAttribute("role", "status");
+    loading.setAttribute("aria-label", translatedLabel);
+    label.className = "nbai__thinking-label";
+    label.textContent = visibleLabel;
+    label.setAttribute("aria-hidden", "true");
+    dots.className = "nbai__thinking-dots";
+    dots.setAttribute("aria-hidden", "true");
+    for (let index = 0; index < 3; index += 1) {
+      dots.appendChild(document.createElement("span"));
+    }
+    loading.append(label, dots);
+    return loading;
+  }
+
   function trimHistory() {
     if (history.length > 20) {
       history.splice(0, history.length - 20);
@@ -442,7 +463,7 @@
     trimHistory();
     persistHistory();
 
-    const loading = addMessage("assistant", translate("thinking"), "loading");
+    const loading = addLoadingMessage();
     pending = true;
     input.disabled = true;
     sendButton.disabled = true;

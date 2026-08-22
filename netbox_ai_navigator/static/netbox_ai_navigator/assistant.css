@@ -285,8 +285,48 @@
 }
 
 .nbai__message--loading {
+  align-items: center;
   color: var(--nbai-muted);
-  font-style: italic;
+  display: inline-flex;
+  gap: 0.4rem;
+}
+
+.nbai__thinking-dots {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.18rem;
+  height: 1em;
+}
+
+.nbai__thinking-dots span {
+  animation: nbai-thinking-dot 1.1s ease-in-out infinite;
+  background: currentColor;
+  border-radius: 50%;
+  height: 0.3rem;
+  opacity: 0.35;
+  width: 0.3rem;
+}
+
+.nbai__thinking-dots span:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.nbai__thinking-dots span:nth-child(3) {
+  animation-delay: 240ms;
+}
+
+@keyframes nbai-thinking-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+
+  30% {
+    opacity: 1;
+    transform: translateY(-0.2rem);
+  }
 }
 
 .nbai__message--error {
@@ -380,5 +420,10 @@
   .nbai__launcher,
   .nbai__panel {
     transition: none;
+  }
+
+  .nbai__thinking-dots span {
+    animation: none;
+    opacity: 0.65;
   }
 }
