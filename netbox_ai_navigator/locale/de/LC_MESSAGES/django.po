@@ -77,3 +77,12 @@ msgstr "Die Unterhaltung wurde zurückgesetzt. Was möchten Sie untersuchen?"
 
 msgid "The conversation could not be cleared."
 msgstr "Die Unterhaltung konnte nicht zurückgesetzt werden."
+
+msgid "The model response could not be verified against NetBox data. Please retry or refine the request."
+msgstr "Die Modellantwort konnte nicht anhand der NetBox-Daten verifiziert werden. Bitte versuchen Sie es erneut oder präzisieren Sie die Anfrage."
+
+msgid "The tool-call limit was reached before the answer could be verified against NetBox data. Please refine the request."
+msgstr "Das Werkzeuglimit wurde erreicht, bevor die Antwort anhand der NetBox-Daten verifiziert werden konnte. Bitte präzisieren Sie die Anfrage."
+
+msgid "Verified NetBox results ({count}):"
+msgstr "Verifizierte NetBox-Ergebnisse ({count}):"

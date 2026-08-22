@@ -167,7 +167,12 @@
         }
       } else {
         const element = document.createElement(match[4] ? "code" : (match[5] || match[6]) ? "strong" : "em");
-        element.textContent = match[4] || match[5] || match[6] || match[7];
+        const inlineContent = match[4] || match[5] || match[6] || match[7];
+        if (match[4]) {
+          element.textContent = inlineContent;
+        } else {
+          appendInlineMarkdown(element, inlineContent);
+        }
         container.appendChild(element);
       }
       cursor = pattern.lastIndex;

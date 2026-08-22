@@ -29,3 +29,22 @@ class UITranslationTest(SimpleTestCase):
 
         self.assertEqual(translations["send"], "Send")
         self.assertEqual(translations["clear_conversation"], "Clear conversation")
+
+    def test_translates_grounding_error(self):
+        with override("de"):
+            message = gettext(
+                "The model response could not be verified against NetBox data. "
+                "Please retry or refine the request."
+            )
+
+        self.assertEqual(
+            message,
+            "Die Modellantwort konnte nicht anhand der NetBox-Daten verifiziert werden. "
+            "Bitte versuchen Sie es erneut oder präzisieren Sie die Anfrage.",
+        )
+
+    def test_translates_grounded_fallback_heading(self):
+        with override("de"):
+            message = gettext("Verified NetBox results ({count}):").format(count=2)
+
+        self.assertEqual(message, "Verifizierte NetBox-Ergebnisse (2):")

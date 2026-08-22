@@ -23,10 +23,14 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
         self.assertEqual(self.provider.max_results, 50)
 
     def test_only_four_read_tools_are_exposed(self):
+        tools = self.provider.list_tools(self.context)
         self.assertEqual(
-            {tool.name for tool in self.provider.list_tools(self.context)},
+            {tool.name for tool in tools},
             {"list_object_types", "describe_object_type", "query_objects", "get_object"},
         )
+        query_description = next(tool.description for tool in tools if tool.name == "query_objects")
+        self.assertIn("q filter for free-text searches", query_description)
+        self.assertIn("site and location accept registered choices", query_description)
 
     def test_unknown_tool_is_rejected(self):
         with self.assertRaises(ToolNotFoundError):

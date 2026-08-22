@@ -241,7 +241,10 @@ class LocalCurrentUserProvider(ToolProvider):
                 name="query_objects",
                 description=(
                     "Query read-only NetBox objects. Filters use the registered NetBox FilterSet semantics. "
-                    "Call describe_object_type first when filter or field names are uncertain."
+                    "Use the q filter for free-text searches such as a city, partial site name, device name, or "
+                    "description. Relationship filters such as site and location accept registered choices, not "
+                    "unverified free text. Call describe_object_type first when other filter or field names are "
+                    "uncertain."
                 ),
                 input_schema={
                     "type": "object",
