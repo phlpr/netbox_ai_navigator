@@ -67,6 +67,21 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertEqual(tool_message["role"], "tool")
         self.assertEqual(json.loads(tool_message["content"])["result"]["value"], 42)
 
+    def test_sends_shared_markdown_formatting_contract(self):
+        model = FakeModelProvider([ModelResponse(content="The answer is 42.")])
+        runtime = AgentRuntime(model, FakeToolProvider())
+
+        runtime.run(self.context, [{"role": "user", "content": "What is the value?"}])
+
+        system_message = model.calls[0][0][0]
+        self.assertEqual(system_message["role"], "system")
+        self.assertIn("Formatting is part of correctness", system_message["content"])
+        self.assertIn("GitHub-style Markdown", system_message["content"])
+        self.assertIn("no more than five relevant columns", system_message["content"])
+        self.assertIn("Never create a separate Link or URL column", system_message["content"])
+        self.assertIn("For device tables", system_message["content"])
+        self.assertIn("Do not emit raw JSON", system_message["content"])
+
     def test_unknown_tools_are_rejected_and_reported_to_model(self):
         model = FakeModelProvider(
             [
