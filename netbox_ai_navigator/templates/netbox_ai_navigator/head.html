@@ -1,0 +1,4 @@
+{% load static %}
+<link rel="stylesheet" href="{% static 'netbox_ai_navigator/assistant.css' %}">
+{{ assistant_bootstrap|json_script:"netbox-ai-navigator-bootstrap" }}
+<script defer src="{% static 'netbox_ai_navigator/assistant.js' %}"></script>

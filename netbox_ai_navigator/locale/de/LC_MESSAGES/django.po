@@ -1,0 +1,70 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: netbox-ai-navigator 0.1.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-22 00:00+0200\n"
+"PO-Revision-Date: 2026-08-22 00:00+0200\n"
+"Language: de\n"
+"Language-Team: German\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Codex\n"
+
+msgid "Open NetBox AI Navigator"
+msgstr "NetBox AI Navigator öffnen"
+
+msgid "NetBox AI Navigator"
+msgstr "NetBox AI Navigator"
+
+msgid "Read-only · your permissions"
+msgstr "Nur Lesen · Ihre Berechtigungen"
+
+msgid "Expand assistant"
+msgstr "Assistent vergrößern"
+
+msgid "Restore assistant size"
+msgstr "Ursprüngliche Assistentengröße wiederherstellen"
+
+msgid "Clear conversation"
+msgstr "Unterhaltung zurücksetzen"
+
+msgid "Close assistant"
+msgstr "Assistent schließen"
+
+msgid "Ask me about the NetBox data you are permitted to view on this page."
+msgstr "Fragen Sie mich nach den NetBox-Daten, die Sie auf dieser Seite sehen dürfen."
+
+msgid "Question"
+msgstr "Frage"
+
+msgid "Ask about your NetBox…"
+msgstr "Fragen Sie Ihre NetBox…"
+
+msgid "Send question"
+msgstr "Frage senden"
+
+msgid "Send"
+msgstr "Senden"
+
+msgid "Answers may be inaccurate. Verify important data in NetBox."
+msgstr "Antworten können ungenau sein. Prüfen Sie wichtige Angaben in NetBox."
+
+msgid "Thinking…"
+msgstr "Denke nach…"
+
+msgid "Request failed with HTTP {status}."
+msgstr "Die Anfrage ist mit HTTP {status} fehlgeschlagen."
+
+msgid "The assistant is currently unavailable."
+msgstr "Der Assistent ist derzeit nicht verfügbar."
+
+msgid "Reset failed with HTTP {status}."
+msgstr "Das Zurücksetzen ist mit HTTP {status} fehlgeschlagen."
+
+msgid "Conversation cleared. What would you like to explore?"
+msgstr "Die Unterhaltung wurde zurückgesetzt. Was möchten Sie untersuchen?"
+
+msgid "The conversation could not be cleared."
+msgstr "Die Unterhaltung konnte nicht zurückgesetzt werden."

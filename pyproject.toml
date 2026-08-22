@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netbox-ai-navigator"
+version = "0.1.0"
+description = "A read-only, RBAC-aware AI assistant for NetBox."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "phlpr" },
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: Django",
+  "Intended Audience :: System Administrators",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+  "requests>=2.32",
+]
+
+[project.urls]
+Repository = "https://github.com/phlpr/netbox_ai_navigator"
+
+[tool.setuptools.packages.find]
+include = ["netbox_ai_navigator*"]
+
+[tool.setuptools.package-data]
+netbox_ai_navigator = [
+  "locale/**/*.mo",
+  "locale/**/*.po",
+  "templates/**/*.html",
+  "static/**/*.css",
+  "static/**/*.js",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
