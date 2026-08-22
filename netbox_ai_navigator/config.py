@@ -5,6 +5,8 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
 PLUGIN_NAME = "netbox_ai_navigator"
+READ_PERMISSION = f"{PLUGIN_NAME}.use_read_ainavigator"
+WRITE_PERMISSION = f"{PLUGIN_NAME}.use_write_ainavigator"
 
 DEFAULT_ALLOWED_OBJECT_TYPES = (
     "dcim.site",
@@ -24,7 +26,6 @@ DEFAULT_ALLOWED_OBJECT_TYPES = (
 
 DEFAULT_SETTINGS = {
     "enabled": True,
-    "allowed_groups": [],
     "model": {
         "provider": "openai_compatible",
         "base_url": "http://localhost:11434/v1",
@@ -75,10 +76,6 @@ def validate_plugin_settings(configured: dict[str, Any]) -> None:
     config = _deep_merge(DEFAULT_SETTINGS, configured)
     if not isinstance(config["enabled"], bool):
         raise ImproperlyConfigured("netbox_ai_navigator.enabled must be a boolean.")
-    if not isinstance(config["allowed_groups"], list) or not all(
-        isinstance(group, str) and group for group in config["allowed_groups"]
-    ):
-        raise ImproperlyConfigured("netbox_ai_navigator.allowed_groups must be an array of group names.")
 
     model = config["model"]
     model_provider = model.get("provider")
@@ -151,10 +148,21 @@ def _require_positive_number(
         raise ImproperlyConfigured(f"netbox_ai_navigator.{path} must be a positive {kind}{limit}.")
 
 
-def user_can_use_assistant(user, plugin_settings: dict[str, Any] | None = None) -> bool:
+def _user_is_eligible(user, plugin_settings: dict[str, Any] | None = None) -> bool:
     config = plugin_settings or get_plugin_settings()
-    if not config.get("enabled", True) or not user.is_authenticated or not user.is_active:
-        return False
+    return bool(config.get("enabled", True) and user.is_authenticated and user.is_active)
 
-    allowed_groups = config.get("allowed_groups") or []
-    return not allowed_groups or user.groups.filter(name__in=allowed_groups).exists()
+
+def user_can_write_assistant(user, plugin_settings: dict[str, Any] | None = None) -> bool:
+    return _user_is_eligible(user, plugin_settings) and user.has_perm(WRITE_PERMISSION)
+
+
+def user_can_read_assistant(user, plugin_settings: dict[str, Any] | None = None) -> bool:
+    if not _user_is_eligible(user, plugin_settings):
+        return False
+    return user.has_perm(READ_PERMISSION) or user.has_perm(WRITE_PERMISSION)
+
+
+def user_can_use_assistant(user, plugin_settings: dict[str, Any] | None = None) -> bool:
+    """Compatibility alias for the current read-only assistant access check."""
+    return user_can_read_assistant(user, plugin_settings)

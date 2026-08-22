@@ -17,8 +17,9 @@ Version 0.1 targets NetBox 4.6 and Python 3.12 or newer. It provides:
 - four read-only tools: `list_object_types`, `describe_object_type`, `query_objects`, and `get_object`;
 - NetBox FilterSet semantics and NetBox REST serializers;
 - current-user RBAC via `queryset.restrict(user, "view")` before filtering or lookup;
+- dedicated `use_read` and future-ready `use_write` AI Navigator capabilities assignable to NetBox users or groups;
 - an explicit model and output-field allowlist;
-- session-scoped conversation history without plugin database models or migrations.
+- session-scoped conversation history without storing chat data in the NetBox database.
 
 The OpenAI-compatible provider requires native tool calling. The Custom API Connector adapts a deployment-specific
 backend to the same internal agent contract.
@@ -65,8 +66,6 @@ PLUGINS = [
 PLUGINS_CONFIG = {
     "netbox_ai_navigator": {
         "enabled": True,
-        # Empty means all active, authenticated users.
-        "allowed_groups": [],
         "model": {
             "provider": "openai_compatible",
             "base_url": "http://ollama:11434/v1",
@@ -107,14 +106,15 @@ PLUGINS_CONFIG = {
 }
 ```
 
-Collect static assets and restart NetBox:
+Apply the permission migration, collect static assets, and restart NetBox:
 
 ```bash
+python /opt/netbox/netbox/manage.py migrate
 python /opt/netbox/netbox/manage.py collectstatic --no-input
 sudo systemctl restart netbox netbox-rq
 ```
 
-The plugin has no database migrations.
+The migration registers the permission-only `AI Navigator` object type. The model is unmanaged and stores no rows.
 
 ### Custom API Connector
 
@@ -144,8 +144,16 @@ duration, model name, tool count, and status is logged. Chat history is stored u
 browser key so it survives page navigation and reloads. Resetting the conversation or starting a new login clears the
 visible history.
 
-`allowed_groups` contains NetBox group names. An empty list enables the assistant for every active, authenticated user.
-Setting `enabled` to `False` removes the UI and denies the endpoint.
+Navigator access is assigned through **Admin → Object Permissions** using the `AI Navigator` object type and one of
+the registered custom actions:
+
+- `use_read` shows the Navigator and permits its current read-only chat tools.
+- `use_write` implies read access and is reserved for the future confirmed-write workflow. It does not enable any
+  mutation tools in version 0.1.
+
+Assign either action directly to users or to groups. A user with neither action does not receive the UI and gets HTTP
+403 from the chat and reset endpoints. `enabled=False` remains a global kill switch and overrides both capabilities.
+Normal NetBox object permissions continue to determine which individual objects the read tools may return.
 
 ## Development and tests
 

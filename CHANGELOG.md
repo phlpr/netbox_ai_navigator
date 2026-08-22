@@ -11,3 +11,5 @@
 - Add the bounded agent runtime and current-user read-only tool provider.
 - Enforce model, field, result, history, output, and response limits.
 - Add RBAC, provider, agent, tool, and view tests.
+- Add assignable `use_read` and future-ready `use_write` Navigator capabilities; hide and deny the assistant when
+  neither action is granted.

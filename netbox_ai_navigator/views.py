@@ -9,7 +9,7 @@ from django.views import View
 from django.views.decorators.cache import never_cache
 
 from .agent import build_agent_runtime
-from .config import get_plugin_settings, user_can_use_assistant
+from .config import get_plugin_settings, user_can_read_assistant
 from .exceptions import AgentLimitError, InvalidRequestError, ProviderError, ProviderTimeoutError
 from .model_providers import MyGPTApiProvider
 from .session_state import (
@@ -41,7 +41,7 @@ class ChatView(View):
         plugin_settings = get_plugin_settings()
         model_name = str(plugin_settings["model"].get("model", ""))
 
-        if not user_can_use_assistant(request.user, plugin_settings):
+        if not user_can_read_assistant(request.user, plugin_settings):
             return self._json_error("The assistant is not available for this user.", status=403)
         if request.content_type != "application/json":
             return self._json_error("Content-Type must be application/json.", status=415)
@@ -159,7 +159,7 @@ class ChatView(View):
 class ResetConversationView(ChatView):
     def post(self, request):
         plugin_settings = get_plugin_settings()
-        if not user_can_use_assistant(request.user, plugin_settings):
+        if not user_can_read_assistant(request.user, plugin_settings):
             return self._json_error("The assistant is not available for this user.", status=403)
 
         conversation_id = get_mygpt_conversation_id(request)

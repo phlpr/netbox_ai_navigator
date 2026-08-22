@@ -3,7 +3,7 @@ from django.urls import reverse
 from django.utils.translation import gettext as _
 from netbox.plugins import PluginTemplateExtension
 
-from .config import get_plugin_settings, user_can_use_assistant
+from .config import get_plugin_settings, user_can_read_assistant
 from .session_state import get_or_create_browser_storage_token
 from .tool_providers.local_current_user import SAFE_OUTPUT_FIELDS
 
@@ -36,7 +36,7 @@ class GlobalAssistantExtension(PluginTemplateExtension):
     def head(self):
         request = self.context["request"]
         plugin_settings = get_plugin_settings()
-        if not user_can_use_assistant(request.user, plugin_settings):
+        if not user_can_read_assistant(request.user, plugin_settings):
             return ""
 
         allowed_types = set(plugin_settings["tools"].get("allowed_object_types") or []).intersection(SAFE_OUTPUT_FIELDS)

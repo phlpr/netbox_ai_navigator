@@ -18,6 +18,15 @@ msgstr "NetBox AI Navigator öffnen"
 msgid "NetBox AI Navigator"
 msgstr "NetBox AI Navigator"
 
+msgid "AI Navigator"
+msgstr "AI Navigator"
+
+msgid "Use AI Navigator in read-only mode"
+msgstr "AI Navigator im Nur-Lese-Modus verwenden"
+
+msgid "Use AI Navigator with write capabilities"
+msgstr "AI Navigator mit Schreibberechtigung verwenden"
+
 msgid "Read-only · your permissions"
 msgstr "Nur Lesen · Ihre Berechtigungen"
 

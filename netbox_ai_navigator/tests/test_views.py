@@ -5,6 +5,7 @@ from unittest.mock import patch
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from netbox_ai_navigator.agent import AgentResult
+from netbox_ai_navigator.config import READ_PERMISSION, WRITE_PERMISSION
 from netbox_ai_navigator.model_providers import MyGPTApiProvider
 from netbox_ai_navigator.session_state import MYGPT_CONVERSATION_SESSION_KEY
 from netbox_ai_navigator.views import ChatView, ResetConversationView
@@ -13,6 +14,12 @@ from netbox_ai_navigator.views import ChatView, ResetConversationView
 class FakeUser:
     is_authenticated = True
     is_active = True
+
+    def __init__(self, permissions=None):
+        self.permissions = set(permissions if permissions is not None else [READ_PERMISSION])
+
+    def has_perm(self, permission):
+        return permission in self.permissions
 
     def get_username(self):
         return "test-user"
@@ -42,7 +49,6 @@ class FakeMyGPTRuntime(FakeRuntime):
     PLUGINS_CONFIG={
         "netbox_ai_navigator": {
             "enabled": True,
-            "allowed_groups": [],
             "model": {"api_key": "never-return-this", "model": "test-model"},
         }
     }
@@ -80,6 +86,33 @@ class ChatViewTest(SimpleTestCase):
 
         self.assertEqual(response.status_code, 401)
 
+    @patch("netbox_ai_navigator.views.build_agent_runtime")
+    def test_denies_user_without_navigator_permission(self, build_runtime):
+        request = self.factory.post(
+            "/plugins/ai-navigator/api/chat/",
+            data=json.dumps({"messages": [{"role": "user", "content": "Show the device"}]}),
+            content_type="application/json",
+        )
+        request.user = FakeUser(permissions=[])
+
+        response = ChatView.as_view()(request)
+
+        self.assertEqual(response.status_code, 403)
+        build_runtime.assert_not_called()
+
+    @patch("netbox_ai_navigator.views.build_agent_runtime", return_value=FakeRuntime())
+    def test_write_permission_implies_read_only_chat_access(self, _build_runtime):
+        request = self.factory.post(
+            "/plugins/ai-navigator/api/chat/",
+            data=json.dumps({"messages": [{"role": "user", "content": "Show the device"}]}),
+            content_type="application/json",
+        )
+        request.user = FakeUser(permissions=[WRITE_PERMISSION])
+
+        response = ChatView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+
     def test_rejects_non_json_request(self):
         request = self.factory.post("/plugins/ai-navigator/api/chat/", data="plain text", content_type="text/plain")
         request.user = FakeUser()
@@ -108,7 +141,6 @@ class ChatViewTest(SimpleTestCase):
     PLUGINS_CONFIG={
         "netbox_ai_navigator": {
             "enabled": True,
-            "allowed_groups": [],
             "model": {
                 "provider": "mygpt_api",
                 "api_url": "https://api.myg.pt/api/v1/",
