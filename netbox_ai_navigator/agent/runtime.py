@@ -28,6 +28,69 @@ EMPHASIZED_VALUE_RE = re.compile(r"\*\*([^*\n]+)\*\*|`([^`\n]+)`")
 NETBOX_DETAIL_PATH_RE = re.compile(r"^/(?:api/)?(?:dcim|ipam|circuits|virtualization)/.+/\d+/?$")
 TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
 EMPTY_TABLE_VALUES = frozenset({"", "-", "—", "n/a", "none", "null"})
+FALLBACK_FIELD_PRIORITIES: dict[str, tuple[str, ...]] = {
+    "dcim.site": ("region", "group", "status", "facility", "description"),
+    "dcim.location": ("site", "parent", "status", "tenant", "description"),
+    "dcim.rack": ("site", "location", "role", "status", "u_height"),
+    "dcim.device": ("role", "site", "location", "status", "primary_ip4"),
+    "dcim.interface": ("device", "type", "enabled", "mtu", "description"),
+    "ipam.vrf": ("rd", "tenant", "enforce_unique", "description"),
+    "ipam.prefix": ("prefix", "vrf", "tenant", "status", "role"),
+    "ipam.ipaddress": ("address", "vrf", "tenant", "status", "dns_name"),
+    "ipam.vlan": ("vid", "site", "group", "status", "role"),
+    "circuits.provider": ("asn", "account", "noc_contact", "description"),
+    "circuits.circuit": ("cid", "provider", "type", "status", "commit_rate"),
+    "virtualization.cluster": ("type", "group", "status", "tenant", "scope"),
+    "virtualization.virtualmachine": ("role", "site", "cluster", "status", "primary_ip4"),
+}
+FALLBACK_OBJECT_LABELS = {
+    "dcim.site": "Site",
+    "dcim.location": "Location",
+    "dcim.rack": "Rack",
+    "dcim.device": "Device",
+    "dcim.interface": "Interface",
+    "ipam.vrf": "VRF",
+    "ipam.prefix": "Prefix",
+    "ipam.ipaddress": "IP address",
+    "ipam.vlan": "VLAN",
+    "circuits.provider": "Provider",
+    "circuits.circuit": "Circuit",
+    "virtualization.cluster": "Cluster",
+    "virtualization.virtualmachine": "Virtual machine",
+}
+FALLBACK_FIELD_LABELS = {
+    "region": "Region",
+    "group": "Group",
+    "status": "Status",
+    "facility": "Facility",
+    "description": "Description",
+    "site": "Site",
+    "parent": "Parent",
+    "tenant": "Tenant",
+    "location": "Location",
+    "role": "Role",
+    "u_height": "Height (U)",
+    "primary_ip4": "Primary IPv4",
+    "device": "Device",
+    "type": "Type",
+    "enabled": "Enabled",
+    "mtu": "MTU",
+    "rd": "RD",
+    "enforce_unique": "Enforce unique",
+    "prefix": "Prefix",
+    "vrf": "VRF",
+    "address": "IP address",
+    "dns_name": "DNS name",
+    "vid": "VLAN ID",
+    "asn": "ASN",
+    "account": "Account",
+    "noc_contact": "NOC contact",
+    "cid": "Circuit ID",
+    "provider": "Provider",
+    "commit_rate": "Commit rate",
+    "scope": "Scope",
+    "cluster": "Cluster",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +101,8 @@ class AgentResult:
 
 @dataclass(frozen=True, slots=True)
 class GroundingRecord:
+    object_type: str
+    data: dict[str, Any]
     display: str
     display_url: str | None
     identities: frozenset[str]
@@ -247,6 +312,7 @@ class AgentRuntime:
             return []
 
         records = []
+        object_type = str(result.get("object_type") or "")
         for value in objects:
             if not isinstance(value, dict):
                 continue
@@ -265,6 +331,8 @@ class AgentRuntime:
                 display_url = value.get("display_url") or value.get("url")
                 records.append(
                     GroundingRecord(
+                        object_type=object_type,
+                        data=dict(value),
                         display=str(display),
                         display_url=str(display_url) if isinstance(display_url, str) else None,
                         identities=frozenset(identities),
@@ -287,13 +355,81 @@ class AgentRuntime:
             unique_records.append(record)
 
         lines = [_("Verified NetBox results ({count}):").format(count=len(unique_records)), ""]
+        table = cls._fallback_table(unique_records)
+        if table:
+            lines.extend(table)
+            return "\n".join(lines)
+
         for record in unique_records:
-            display = record.display.replace("[", r"\[").replace("]", r"\]")
+            display = cls._escape_markdown(record.display, link_text=True)
             if record.display_url:
                 lines.append(f"- [{display}]({cls._url_key(record.display_url)})")
             else:
                 lines.append(f"- `{record.display.replace('`', '')}`")
         return "\n".join(lines)
+
+    @classmethod
+    def _fallback_table(cls, records: list[GroundingRecord]) -> list[str]:
+        if len(records) < 2:
+            return []
+        object_types = {record.object_type for record in records}
+        if len(object_types) != 1:
+            return []
+        object_type = next(iter(object_types))
+        priorities = FALLBACK_FIELD_PRIORITIES.get(object_type)
+        if not priorities:
+            return []
+
+        fields = [
+            field
+            for field in priorities
+            if any(cls._fallback_value(record.data.get(field)) for record in records)
+        ][:4]
+        if len(fields) < 2:
+            return []
+
+        object_label = _(FALLBACK_OBJECT_LABELS.get(object_type, "Object"))
+        headers = [object_label, *(_(FALLBACK_FIELD_LABELS.get(field, field)) for field in fields)]
+        lines = [
+            f"| {' | '.join(headers)} |",
+            f"| {' | '.join('---' for _header in headers)} |",
+        ]
+        for record in records:
+            display = cls._escape_markdown(record.display, link_text=True)
+            if record.display_url:
+                object_cell = f"[{display}]({cls._url_key(record.display_url)})"
+            else:
+                object_cell = cls._escape_markdown(record.display)
+            values = [
+                cls._escape_markdown(cls._fallback_value(record.data.get(field)) or "—")
+                for field in fields
+            ]
+            lines.append(f"| {' | '.join([object_cell, *values])} |")
+        return lines
+
+    @classmethod
+    def _fallback_value(cls, value: Any) -> str:
+        if value is None or value == "":
+            return ""
+        if isinstance(value, dict):
+            for key in ("display", "label", "name", "value"):
+                nested = value.get(key)
+                if nested is not None and nested != "":
+                    return cls._fallback_value(nested)
+            return ""
+        if isinstance(value, list):
+            values = [cls._fallback_value(item) for item in value]
+            return ", ".join(item for item in values if item)
+        if isinstance(value, bool):
+            return _("Yes") if value else _("No")
+        return " ".join(str(value).split())
+
+    @staticmethod
+    def _escape_markdown(value: str, *, link_text: bool = False) -> str:
+        escaped = value.replace("\\", r"\\").replace("|", r"\|").replace("\n", " ")
+        if link_text:
+            escaped = escaped.replace("[", r"\[").replace("]", r"\]")
+        return escaped
 
     @classmethod
     def _collect_values(cls, value: Any) -> tuple[set[str], set[str]]:

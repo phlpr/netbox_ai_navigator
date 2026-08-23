@@ -48,3 +48,9 @@ class UITranslationTest(SimpleTestCase):
             message = gettext("Verified NetBox results ({count}):").format(count=2)
 
         self.assertEqual(message, "Verifizierte NetBox-Ergebnisse (2):")
+
+    def test_translates_grounded_fallback_device_columns(self):
+        with override("de"):
+            labels = [gettext(value) for value in ("Device", "Role", "Site", "Location", "Status")]
+
+        self.assertEqual(labels, ["Gerät", "Rolle", "Standort", "Lokation", "Status"])

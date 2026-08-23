@@ -86,3 +86,120 @@ msgstr "Das Werkzeuglimit wurde erreicht, bevor die Antwort anhand der NetBox-Da
 
 msgid "Verified NetBox results ({count}):"
 msgstr "Verifizierte NetBox-Ergebnisse ({count}):"
+
+msgid "Object"
+msgstr "Objekt"
+
+msgid "Device"
+msgstr "Gerät"
+
+msgid "Role"
+msgstr "Rolle"
+
+msgid "Site"
+msgstr "Standort"
+
+msgid "Location"
+msgstr "Lokation"
+
+msgid "Status"
+msgstr "Status"
+
+msgid "Primary IPv4"
+msgstr "Primäre IPv4"
+
+msgid "Yes"
+msgstr "Ja"
+
+msgid "No"
+msgstr "Nein"
+
+msgid "Region"
+msgstr "Region"
+
+msgid "Group"
+msgstr "Gruppe"
+
+msgid "Facility"
+msgstr "Einrichtung"
+
+msgid "Description"
+msgstr "Beschreibung"
+
+msgid "Parent"
+msgstr "Übergeordnet"
+
+msgid "Tenant"
+msgstr "Mandant"
+
+msgid "Rack"
+msgstr "Rack"
+
+msgid "Interface"
+msgstr "Schnittstelle"
+
+msgid "VRF"
+msgstr "VRF"
+
+msgid "Prefix"
+msgstr "Präfix"
+
+msgid "IP address"
+msgstr "IP-Adresse"
+
+msgid "VLAN"
+msgstr "VLAN"
+
+msgid "Provider"
+msgstr "Anbieter"
+
+msgid "Circuit"
+msgstr "Verbindung"
+
+msgid "Cluster"
+msgstr "Cluster"
+
+msgid "Virtual machine"
+msgstr "Virtuelle Maschine"
+
+msgid "Height (U)"
+msgstr "Höhe (HE)"
+
+msgid "Type"
+msgstr "Typ"
+
+msgid "Enabled"
+msgstr "Aktiviert"
+
+msgid "MTU"
+msgstr "MTU"
+
+msgid "RD"
+msgstr "RD"
+
+msgid "Enforce unique"
+msgstr "Eindeutigkeit erzwingen"
+
+msgid "DNS name"
+msgstr "DNS-Name"
+
+msgid "VLAN ID"
+msgstr "VLAN-ID"
+
+msgid "ASN"
+msgstr "ASN"
+
+msgid "Account"
+msgstr "Konto"
+
+msgid "NOC contact"
+msgstr "NOC-Kontakt"
+
+msgid "Circuit ID"
+msgstr "Verbindungs-ID"
+
+msgid "Commit rate"
+msgstr "Zugesicherte Datenrate"
+
+msgid "Scope"
+msgstr "Geltungsbereich"

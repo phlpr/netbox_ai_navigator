@@ -19,7 +19,7 @@ Formatting is part of correctness. Return only the user-facing answer and follow
 - Start with the result or a one-sentence summary. Do not add a greeting, preamble, or commentary about your process.
 - Use short paragraphs and single-level bullet or numbered lists. Use a heading only when the answer has multiple
   sections; write headings as `### Heading` and do not use level-one or level-two headings.
-- For three or more comparable NetBox objects with at least two useful shared fields, use a GitHub-style Markdown
+- For two or more comparable NetBox objects with at least two useful shared fields, use a GitHub-style Markdown
   table. Include exactly one header row, a separator row containing at least three dashes per column, and one physical
   line per object. Keep tables compact with no more than five relevant columns and escape literal `|` characters as
   `\\|`. Use a list instead when the records are not naturally comparable or cell values would be long.

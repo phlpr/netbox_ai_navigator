@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 from django.test import RequestFactory, SimpleTestCase
+from django.utils.translation import override
 
 from netbox_ai_navigator.agent.runtime import AgentRuntime
 from netbox_ai_navigator.exceptions import AgentLimitError, ToolNotFoundError, UngroundedResponseError
@@ -80,6 +81,7 @@ GRAZ_DEVICES = [
             "name": "GeoView Graz Edge",
         },
         "role": {"id": 1, "display": "GeoView Access Switch", "name": "GeoView Access Switch"},
+        "location": {"id": 1, "display": "Network Room 201", "name": "Network Room 201"},
         "status": {"value": "active", "label": "Active"},
         "primary_ip4": None,
     },
@@ -95,6 +97,7 @@ GRAZ_DEVICES = [
             "name": "GeoView Graz Edge",
         },
         "role": {"id": 2, "display": "GeoView Firewall", "name": "GeoView Firewall"},
+        "location": {"id": 1, "display": "Network Room 201", "name": "Network Room 201"},
         "status": {"value": "active", "label": "Active"},
         "primary_ip4": None,
     },
@@ -137,6 +140,7 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertEqual(system_message["role"], "system")
         self.assertIn("Formatting is part of correctness", system_message["content"])
         self.assertIn("GitHub-style Markdown", system_message["content"])
+        self.assertIn("For two or more comparable NetBox objects", system_message["content"])
         self.assertIn("no more than five relevant columns", system_message["content"])
         self.assertIn("Never create a separate Link or URL column", system_message["content"])
         self.assertIn("For device tables", system_message["content"])
@@ -196,6 +200,8 @@ class AgentRuntimeTest(SimpleTestCase):
 
         self.assertIn("[gv-graz-access-01](/dcim/devices/4/)", result.answer)
         self.assertIn("[gv-graz-fw-01](/dcim/devices/3/)", result.answer)
+        self.assertIn("| Device | Role | Site | Location | Status |", result.answer)
+        self.assertIn("| GeoView Access Switch | GeoView Graz Edge | Network Room 201 | Active |", result.answer)
         self.assertNotIn("Device01", result.answer)
         self.assertNotIn("192.168.1.10", result.answer)
 
@@ -214,7 +220,26 @@ class AgentRuntimeTest(SimpleTestCase):
         result = runtime.run(self.context, [{"role": "user", "content": "Show the primary IP."}])
 
         self.assertIn("[gv-graz-access-01](/dcim/devices/4/)", result.answer)
+        self.assertIn("| Device | Role | Site | Location | Status |", result.answer)
         self.assertNotIn("192.168.1.10", result.answer)
+
+    def test_translates_grounded_fallback_table(self):
+        answer = """| Device | Status |
+| --- | --- |
+| Device01 | Inactive |"""
+        model = FakeModelProvider(
+            [
+                ModelResponse(tool_calls=[ModelToolCall("call-1", "query_objects", {})]),
+                ModelResponse(content=answer),
+            ]
+        )
+        runtime = AgentRuntime(model, FakeDeviceToolProvider(GRAZ_DEVICES))
+
+        with override("de"):
+            result = runtime.run(self.context, [{"role": "user", "content": "Zeige Geräte in Graz."}])
+
+        self.assertIn("| Gerät | Rolle | Standort | Lokation | Status |", result.answer)
+        self.assertIn("Verifizierte NetBox-Ergebnisse (2):", result.answer)
 
     def test_replaces_unsupported_emphasized_claim_with_grounded_fallback(self):
         answer = """1. **[gv-graz-access-01](http://testserver/dcim/devices/4/)**
