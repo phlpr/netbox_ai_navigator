@@ -241,10 +241,11 @@ class LocalCurrentUserProvider(ToolProvider):
                 name="query_objects",
                 description=(
                     "Query read-only NetBox objects. Filters use the registered NetBox FilterSet semantics. "
-                    "Use the q filter for free-text searches such as a city, partial site name, device name, or "
-                    "description. Relationship filters such as site and location accept registered choices, not "
-                    "unverified free text. Call describe_object_type first when other filter or field names are "
-                    "uncertain."
+                    "Use the q filter for free-text searches on the queried object. To find objects by city, site, "
+                    "or location, first query dcim.site or dcim.location with q, then filter the target object type "
+                    "by the returned site_id or location_id. A target object's q filter does not necessarily search "
+                    "related objects. Relationship filters such as site and location accept registered choices, not "
+                    "unverified free text. Call describe_object_type first when other filter or field names are uncertain."
                 ),
                 input_schema={
                     "type": "object",

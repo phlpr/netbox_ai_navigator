@@ -29,7 +29,8 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
             {"list_object_types", "describe_object_type", "query_objects", "get_object"},
         )
         query_description = next(tool.description for tool in tools if tool.name == "query_objects")
-        self.assertIn("q filter for free-text searches", query_description)
+        self.assertIn("q filter for free-text searches on the queried object", query_description)
+        self.assertIn("returned site_id or location_id", query_description)
         self.assertIn("site and location accept registered choices", query_description)
 
     def test_unknown_tool_is_rejected(self):
