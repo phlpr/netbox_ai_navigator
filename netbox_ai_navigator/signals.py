@@ -9,6 +9,7 @@ from .model_providers import MyGPTApiProvider
 from .session_state import (
     BROWSER_STORAGE_TOKEN_SESSION_KEY,
     clear_mygpt_conversation_id,
+    clear_pending_actions,
     get_mygpt_conversation_id,
     rotate_browser_storage_token,
 )
@@ -39,6 +40,7 @@ def cleanup_conversation_on_logout(sender, request, user, **kwargs):
     session = getattr(request, "session", None)
     if session is not None:
         session.pop(BROWSER_STORAGE_TOKEN_SESSION_KEY, None)
+    clear_pending_actions(request)
 
 
 @receiver(user_logged_in, dispatch_uid="netbox_ai_navigator_reset_on_login")
@@ -46,4 +48,5 @@ def reset_conversation_on_login(sender, request, user, **kwargs):
     if request is None:
         return
     _delete_session_conversation(request)
+    clear_pending_actions(request)
     rotate_browser_storage_token(request)

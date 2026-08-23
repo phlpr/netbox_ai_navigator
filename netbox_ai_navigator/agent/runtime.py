@@ -21,13 +21,15 @@ from .prompts import SYSTEM_PROMPT
 
 logger = logging.getLogger("netbox.plugins.netbox_ai_navigator.agent")
 
-DATA_TOOL_NAMES = frozenset({"query_objects", "get_object"})
+DATA_TOOL_NAMES = frozenset({"query_objects", "get_object", "search_netbox"})
+DETAIL_TOOL_NAMES = frozenset({"query_objects", "get_object"})
 IDENTITY_KEYS = frozenset({"display", "name", "address", "prefix", "cid", "rd", "vid"})
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)]\(([^\s)]+)(?:\s+[^)]*)?\)")
 EMPHASIZED_VALUE_RE = re.compile(r"\*\*([^*\n]+)\*\*|`([^`\n]+)`")
-NETBOX_DETAIL_PATH_RE = re.compile(r"^/(?:api/)?(?:dcim|ipam|circuits|virtualization)/.+/\d+/?$")
+NETBOX_DETAIL_PATH_RE = re.compile(r"^/(?:api/)?(?:plugins/)?[a-z0-9_-]+(?:/[a-z0-9_-]+)+/\d+/?$")
 TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
 EMPTY_TABLE_VALUES = frozenset({"", "-", "—", "n/a", "none", "null"})
+DISCOVERY_ONLY_RECORD_KEYS = frozenset({"id", "display", "display_url", "object_type"})
 FALLBACK_FIELD_PRIORITIES: dict[str, tuple[str, ...]] = {
     "dcim.site": ("region", "group", "status", "facility", "description"),
     "dcim.location": ("site", "parent", "status", "tenant", "description"),
@@ -97,6 +99,8 @@ FALLBACK_FIELD_LABELS = {
 class AgentResult:
     answer: str
     tool_calls: int
+    client_actions: tuple[dict[str, Any], ...] = ()
+    pending_actions: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +121,7 @@ class AgentRuntime:
         model_provider: ModelProvider,
         tool_provider: ToolProvider,
         *,
-        max_tool_calls: int = 5,
+        max_tool_calls: int = 10,
         max_history_messages: int = 20,
         max_message_chars: int = 12000,
         max_tool_output_chars: int = 50000,
@@ -126,7 +130,7 @@ class AgentRuntime:
     ):
         self.model_provider = model_provider
         self.tool_provider = tool_provider
-        self.max_tool_calls = max(1, min(int(max_tool_calls), 5))
+        self.max_tool_calls = max(1, min(int(max_tool_calls), 10))
         self.max_history_messages = max(1, min(int(max_history_messages), 100))
         self.max_message_chars = max(1, int(max_message_chars))
         self.max_tool_output_chars = max(512, int(max_tool_output_chars))
@@ -158,32 +162,106 @@ class AgentRuntime:
         tool_call_count = 0
         forced_final = False
         data_tool_attempted = False
+        successful_data_tools: set[str] = set()
         grounding_records: list[GroundingRecord] = []
+        client_actions: list[dict[str, Any]] = []
+        pending_actions: list[dict[str, Any]] = []
+        search_refinement_requested = False
+        data_refresh_requested = False
 
-        while response.tool_calls:
-            if forced_final:
-                raise AgentLimitError("The model requested another tool after the tool-call limit was reached.")
+        while True:
+            while response.tool_calls:
+                if forced_final:
+                    raise AgentLimitError("The model requested another tool after the tool-call limit was reached.")
 
-            messages.append(response.as_assistant_message())
-            for tool_call in response.tool_calls:
-                if tool_call_count >= self.max_tool_calls:
-                    result = {"ok": False, "error": "The maximum number of tool calls has been reached."}
-                else:
-                    tool_call_count += 1
-                    result = self._execute_tool(context, tool_call.name, tool_call.arguments)
-                if tool_call.name in DATA_TOOL_NAMES:
-                    data_tool_attempted = True
-                    grounding_records.extend(self._grounding_records(tool_call.name, result))
+                messages.append(response.as_assistant_message())
+                for tool_call in response.tool_calls:
+                    if tool_call_count >= self.max_tool_calls:
+                        result = {"ok": False, "error": "The maximum number of tool calls has been reached."}
+                    else:
+                        tool_call_count += 1
+                        result = self._execute_tool(context, tool_call.name, tool_call.arguments)
+                        tool_result = result.get("result") if result.get("ok") else None
+                        if isinstance(tool_result, dict) and isinstance(tool_result.get("pending_action"), dict):
+                            if pending_actions:
+                                result = {
+                                    "ok": False,
+                                    "error": "Only one change may be proposed per assistant request.",
+                                }
+                            else:
+                                pending_actions.append(tool_result["pending_action"])
+                        if isinstance(tool_result, dict) and isinstance(tool_result.get("client_action"), dict):
+                            action = tool_result["client_action"]
+                            if (
+                                self._valid_client_action(action)
+                                and action not in client_actions
+                                and len(client_actions) < 3
+                            ):
+                                client_actions.append(action)
+                    if tool_call.name in DATA_TOOL_NAMES:
+                        data_tool_attempted = True
+                        new_records = self._grounding_records(tool_call.name, result)
+                        grounding_records.extend(new_records)
+                        if new_records:
+                            successful_data_tools.add(tool_call.name)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": self._bounded_json(result),
+                        }
+                    )
+
+                forced_final = tool_call_count >= self.max_tool_calls
+                response = self.model_provider.complete(messages, [] if forced_final else model_tools)
+
+            needs_search_refinement = (
+                not forced_final
+                and not search_refinement_requested
+                and "search_netbox" in successful_data_tools
+                and not DETAIL_TOOL_NAMES.intersection(successful_data_tools)
+                and not client_actions
+                and not pending_actions
+            )
+            if not needs_search_refinement:
+                answer_needs_data_refresh = (
+                    not forced_final
+                    and not data_refresh_requested
+                    and not grounding_records
+                    and not client_actions
+                    and not pending_actions
+                    and self._answer_references_netbox_data(response.content or "")
+                )
+                if not answer_needs_data_refresh:
+                    break
+
+                data_refresh_requested = True
                 messages.append(
                     {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": self._bounded_json(result),
+                        "role": "system",
+                        "content": (
+                            "This turn has no successful NetBox data result, so facts and links from earlier chat "
+                            "messages cannot be verified. Do not answer from conversation history alone. Call the "
+                            "appropriate current-user data tools now and then answer only from their fresh results."
+                        ),
                     }
                 )
+                response = self.model_provider.complete(messages, model_tools)
+                continue
 
-            forced_final = tool_call_count >= self.max_tool_calls
-            response = self.model_provider.complete(messages, [] if forced_final else model_tools)
+            search_refinement_requested = True
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "The successful search_netbox result is discovery-only. Do not answer from it yet. Use its "
+                        "exact object_type and ID values with get_object to retrieve the requested fields, or use "
+                        "describe_object_type and query_objects for a complete filtered list. Ignore search matches "
+                        "whose object type does not match the user's request."
+                    ),
+                }
+            )
+            response = self.model_provider.complete(messages, model_tools)
 
         answer = response.content or ""
         if not answer:
@@ -206,7 +284,35 @@ class AgentRuntime:
         if len(answer) > self.max_response_chars:
             suffix = "\n\n[Response truncated by NetBox AI Navigator.]"
             answer = answer[: max(0, self.max_response_chars - len(suffix))] + suffix
-        return AgentResult(answer=answer, tool_calls=tool_call_count)
+        return AgentResult(
+            answer=answer,
+            tool_calls=tool_call_count,
+            client_actions=tuple(client_actions),
+            pending_actions=tuple(pending_actions),
+        )
+
+    @classmethod
+    def _answer_references_netbox_data(cls, answer: str) -> bool:
+        if cls._markdown_tables(answer):
+            return True
+        return any(
+            NETBOX_DETAIL_PATH_RE.fullmatch(cls._url_key(target))
+            for _link_text, target in MARKDOWN_LINK_RE.findall(answer)
+        )
+
+    @staticmethod
+    def _valid_client_action(action: dict[str, Any]) -> bool:
+        url = action.get("url")
+        label = action.get("label")
+        return bool(
+            action.get("type") == "navigate"
+            and isinstance(url, str)
+            and url.startswith("/")
+            and not url.startswith("//")
+            and len(url) <= 2048
+            and isinstance(label, str)
+            and 0 < len(label) <= 500
+        )
 
     def _validate_grounding(
         self,
@@ -262,16 +368,16 @@ class AgentRuntime:
 
     def _match_record(self, cell: str, records: list[GroundingRecord]) -> int | None:
         links = MARKDOWN_LINK_RE.findall(cell)
-        for _, target in links:
+        for _link_text, target in links:
             target_key = self._url_key(target)
-            for index, record in enumerate(records):
-                if target_key in record.object_urls:
-                    return index
+            matching = [index for index, record in enumerate(records) if target_key in record.object_urls]
+            if matching:
+                return max(matching, key=lambda index: len(records[index].values))
 
         visible_value = self._normalize_value(self._strip_markdown(cell))
-        for index, record in enumerate(records):
-            if visible_value in record.identities:
-                return index
+        matching = [index for index, record in enumerate(records) if visible_value in record.identities]
+        if matching:
+            return max(matching, key=lambda index: len(records[index].values))
         return None
 
     def _cell_is_grounded(self, cell: str, record: GroundingRecord) -> bool:
@@ -301,7 +407,7 @@ class AgentRuntime:
         if not execution_result.get("ok") or not isinstance(execution_result.get("result"), dict):
             return []
         result = execution_result["result"]
-        if tool_name == "query_objects":
+        if tool_name in {"query_objects", "search_netbox"}:
             objects = result.get("objects")
             if not isinstance(objects, list):
                 return []
@@ -312,10 +418,10 @@ class AgentRuntime:
             return []
 
         records = []
-        object_type = str(result.get("object_type") or "")
         for value in objects:
             if not isinstance(value, dict):
                 continue
+            object_type = str(value.get("object_type") or result.get("object_type") or "")
             identities = {
                 cls._normalize_value(str(field_value))
                 for key, field_value in value.items()
@@ -346,13 +452,21 @@ class AgentRuntime:
     @classmethod
     def _grounded_fallback(cls, records: list[GroundingRecord]) -> str:
         unique_records: list[GroundingRecord] = []
-        seen = set()
+        positions: dict[tuple[str | None, str], int] = {}
         for record in records:
             key = (record.display_url, cls._normalize_value(record.display))
-            if key in seen:
-                continue
-            seen.add(key)
-            unique_records.append(record)
+            position = positions.get(key)
+            if position is None:
+                positions[key] = len(unique_records)
+                unique_records.append(record)
+            elif len(record.values) > len(unique_records[position].values):
+                unique_records[position] = record
+
+        detailed_records = [
+            record for record in unique_records if set(record.data).difference(DISCOVERY_ONLY_RECORD_KEYS)
+        ]
+        if detailed_records:
+            unique_records = detailed_records
 
         lines = [_("Verified NetBox results ({count}):").format(count=len(unique_records)), ""]
         table = cls._fallback_table(unique_records)
@@ -376,20 +490,20 @@ class AgentRuntime:
         if len(object_types) != 1:
             return []
         object_type = next(iter(object_types))
-        priorities = FALLBACK_FIELD_PRIORITIES.get(object_type)
-        if not priorities:
-            return []
+        priorities = FALLBACK_FIELD_PRIORITIES.get(object_type) or cls._generic_fallback_priorities(records)
 
         fields = [
-            field
-            for field in priorities
-            if any(cls._fallback_value(record.data.get(field)) for record in records)
+            field for field in priorities if any(cls._fallback_value(record.data.get(field)) for record in records)
         ][:4]
         if len(fields) < 2:
             return []
 
-        object_label = _(FALLBACK_OBJECT_LABELS.get(object_type, "Object"))
-        headers = [object_label, *(_(FALLBACK_FIELD_LABELS.get(field, field)) for field in fields)]
+        default_object_label = object_type.rsplit(".", 1)[-1].replace("_", " ").title() or "Object"
+        object_label = _(FALLBACK_OBJECT_LABELS.get(object_type, default_object_label))
+        headers = [
+            object_label,
+            *(_(FALLBACK_FIELD_LABELS.get(field, field.replace("_", " ").title())) for field in fields),
+        ]
         lines = [
             f"| {' | '.join(headers)} |",
             f"| {' | '.join('---' for _header in headers)} |",
@@ -400,12 +514,21 @@ class AgentRuntime:
                 object_cell = f"[{display}]({cls._url_key(record.display_url)})"
             else:
                 object_cell = cls._escape_markdown(record.display)
-            values = [
-                cls._escape_markdown(cls._fallback_value(record.data.get(field)) or "—")
-                for field in fields
-            ]
+            values = [cls._escape_markdown(cls._fallback_value(record.data.get(field)) or "—") for field in fields]
             lines.append(f"| {' | '.join([object_cell, *values])} |")
         return lines
+
+    @classmethod
+    def _generic_fallback_priorities(cls, records: list[GroundingRecord]) -> tuple[str, ...]:
+        excluded = IDENTITY_KEYS | {"id", "display_url", "url", "custom_fields", "tags"}
+        candidates = dict.fromkeys(field for record in records for field in record.data if field not in excluded)
+        useful = []
+        for field in candidates:
+            values = [cls._fallback_value(record.data.get(field)) for record in records]
+            nonempty = [value for value in values if value]
+            if nonempty and max(map(len, nonempty)) <= 100:
+                useful.append(field)
+        return tuple(useful)
 
     @classmethod
     def _fallback_value(cls, value: Any) -> str:
@@ -538,10 +661,7 @@ class AgentRuntime:
     def _reject_ungrounded(reason: str) -> None:
         logger.warning("Rejected ungrounded model response", extra={"grounding_reason": reason})
         raise UngroundedResponseError(
-            _(
-                "The model response could not be verified against NetBox data. "
-                "Please retry or refine the request."
-            )
+            _("The model response could not be verified against NetBox data. Please retry or refine the request.")
         )
 
     def _execute_tool(self, context: ToolContext, name: str, raw_arguments: dict[str, Any] | str) -> dict[str, Any]:
@@ -618,7 +738,7 @@ def build_agent_runtime(plugin_settings: dict[str, Any], *, conversation_id: str
     return AgentRuntime(
         model_provider,
         tool_provider,
-        max_tool_calls=agent_config.get("max_tool_calls", 5),
+        max_tool_calls=agent_config.get("max_tool_calls", 10),
         max_history_messages=agent_config.get("max_history_messages", 20),
         max_message_chars=agent_config.get("max_message_chars", 12000),
         max_tool_output_chars=tools_config.get("max_output_chars", 50000),

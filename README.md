@@ -1,7 +1,8 @@
 # NetBox AI Navigator
 
-Explore and understand NetBox data with an AI model of your choice. NetBox AI Navigator is a standalone, read-only
-NetBox plugin whose local tools execute under the permissions of the currently authenticated user.
+Explore, navigate, and safely operate NetBox with an AI model of your choice. NetBox AI Navigator is a standalone
+NetBox plugin whose local tools execute under the permissions of the currently authenticated user. Mutations use a
+separate two-phase approval workflow and are never executed directly by the model.
 
 > [!WARNING]
 > NetBox data returned by tools is sent to the configured model provider. Use an internal endpoint such as Ollama or
@@ -13,12 +14,16 @@ Version 0.1 targets NetBox 4.6 and Python 3.12 or newer. It provides:
 
 - a localized, resizable global chat window with context from the currently visible NetBox page;
 - an OpenAI Chat Completions provider and a deployment-specific Custom API Connector with function/tool calling;
-- a bounded agent loop with at most five tool calls per request;
-- four read-only tools: `list_object_types`, `describe_object_type`, `query_objects`, and `get_object`;
+- a bounded agent loop with at most ten tool calls per request;
+- dynamic read tools for model discovery, schema inspection, filtering, and object lookup;
+- local search across installed NetBox and plugin documentation;
+- verified browser navigation actions for object, list, and global-search pages;
+- validated create, update, and delete proposals with an explicit browser confirmation step;
 - NetBox FilterSet semantics and NetBox REST serializers;
 - current-user RBAC via `queryset.restrict(user, "view")` before filtering or lookup;
 - dedicated `use_read` and future-ready `use_write` AI Navigator capabilities assignable to NetBox users or groups;
-- an explicit model and output-field allowlist;
+- dynamic discovery of supported NetBox core and plugin models, fields, and filters;
+- non-configurable credential guards plus optional administrator exclusions;
 - session-scoped conversation history without storing chat data in the NetBox database.
 
 The OpenAI-compatible provider requires native tool calling. The Custom API Connector adapts a deployment-specific
@@ -40,6 +45,10 @@ AgentRuntime
  │
  └── ToolProvider
       └── LocalCurrentUserProvider
+           ├── Dynamic NetBox model/schema discovery
+           ├── Local documentation index
+           ├── Verified navigation actions
+           └── Confirmed REST API change proposals
 ```
 
 The `ModelProvider` and `ToolProvider` interfaces isolate future MCP, Itential, or additional model integrations from
@@ -81,24 +90,26 @@ PLUGINS_CONFIG = {
             "max_results": 50,
             "max_output_chars": 50000,
             "timeout": 30,
-            "allowed_object_types": [
-                "dcim.site",
-                "dcim.location",
-                "dcim.rack",
-                "dcim.device",
-                "dcim.interface",
-                "ipam.vrf",
-                "ipam.prefix",
-                "ipam.ipaddress",
-                "ipam.vlan",
-                "circuits.provider",
-                "circuits.circuit",
-                "virtualization.cluster",
-                "virtualization.virtualmachine",
-            ],
+            # None discovers all models with a NetBox REST serializer,
+            # registered FilterSet, and restrict()-capable manager.
+            "allowed_object_types": None,
+            # Optional additional deployment-specific restrictions.
+            "excluded_object_types": [],
+            "excluded_fields": [],
+            "documentation": {
+                "enabled": True,
+                "max_results": 5,
+                "max_section_chars": 12000,
+                "additional_roots": [],
+            },
+            "write": {
+                "enabled": True,
+                "approval_ttl": 600,
+                "max_pending": 5,
+            },
         },
         "agent": {
-            "max_tool_calls": 5,
+            "max_tool_calls": 10,
             "max_history_messages": 20,
             "max_message_chars": 12000,
         },
@@ -128,12 +139,22 @@ Every object query follows this order:
 
 ```text
 validate object type
-  → enforce code and administrator allowlists
+  → require a registered REST serializer, FilterSet, and restrict()-capable manager
+  → enforce non-configurable credential guards and administrator exclusions
   → queryset.restrict(current_user, "view")
   → apply registered NetBox FilterSet
   → validate ordering and enforce a hard limit
-  → serialize only explicitly safe fields
+  → remove write-only and blocked fields before serialization
 ```
+
+With `allowed_object_types=None`, compatible models from NetBox core and installed plugins are discovered at runtime.
+Set it to a list of `app_label.model_name` values to use an administrator allowlist instead. `excluded_object_types`
+and `excluded_fields` can narrow either mode further. Built-in credential exclusions cannot be overridden through
+configuration.
+
+Documentation search indexes `DOCS_ROOT`, documentation or README files shipped by installed plugins, and any paths
+explicitly listed in `documentation.additional_roots`. Only local files are read; documentation search performs no
+internet requests.
 
 For object lookup, RBAC restriction is applied before the primary-key filter. An unauthorized object therefore looks
 identical to a nonexistent object. The browser never receives the configured provider credentials, and neither the
@@ -148,20 +169,33 @@ Navigator access is assigned through **Admin → Object Permissions** using the 
 the registered custom actions:
 
 - `use_read` shows the Navigator and permits its current read-only chat tools.
-- `use_write` implies read access and is reserved for the future confirmed-write workflow. It does not enable any
-  mutation tools in version 0.1.
+- `use_write` implies read access and exposes validated create, update, and delete proposals. It does not replace the
+  model-specific NetBox `add`, `change`, or `delete` permission.
 
 Assign either action directly to users or to groups. A user with neither action does not receive the UI and gets HTTP
 403 from the chat and reset endpoints. `enabled=False` remains a global kill switch and overrides both capabilities.
 Normal NetBox object permissions continue to determine which individual objects the read tools may return.
+
+### Confirmed changes
+
+The model can stage at most one change per assistant request. A proposal is validated with the model's registered
+NetBox REST serializer, but no object is saved. The exact before/after preview is stored server-side in the current
+session and displayed with Confirm and Cancel controls. Approval tokens are single-use and expire after ten minutes by
+default.
+
+After confirmation, the plugin dispatches the stored action through the registered NetBox REST ViewSet. NetBox then
+rechecks the current user's normal object permissions, serializer validation, plugin-specific rules, and the object's
+ETag. Concurrent changes therefore invalidate stale proposals instead of being overwritten. Successful changes use a
+fixed AI Navigator changelog message. Credential-bearing object types and fields remain blocked from both reads and
+writes.
 
 ## Development and tests
 
 Run formatting and lint checks with Ruff:
 
 ```bash
-ruff format --check netbox_ai_navigator
-ruff check netbox_ai_navigator testing_configuration.py pyproject.toml
+ruff format --check --exclude netbox_ai_navigator/migrations netbox_ai_navigator
+ruff check --exclude netbox_ai_navigator/migrations netbox_ai_navigator testing_configuration.py pyproject.toml
 ```
 
 Run the plugin test suite from a NetBox 4.6 source checkout. `testing_configuration.py` adds this plugin to NetBox's

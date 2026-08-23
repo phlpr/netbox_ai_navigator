@@ -1,235 +1,127 @@
+import json
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 
 from django.apps import apps
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, connection, transaction
 from django.http import QueryDict
+from django.urls import NoReverseMatch, resolve, reverse
+from django.utils.translation import gettext as _
 from netbox.registry import registry
+from netbox.search.backends import search_backend
 from utilities.api import get_serializer_for_model
+from utilities.views import get_action_url
 
+from netbox_ai_navigator.documentation import DocumentationIndex
 from netbox_ai_navigator.exceptions import ToolError, ToolNotFoundError, ToolValidationError
 
 from .base import ToolDefinition, ToolProvider
 from .context import ToolContext
 
 IDENTITY_FIELDS = ("id", "display", "display_url")
+MAX_WRITE_PAYLOAD_CHARS = 20000
+CHANGELOG_MESSAGE = "Changed through NetBox AI Navigator after explicit user confirmation."
 
-# Fields outside this code-level allowlist can never be returned to a model, even if
-# an administrator accidentally adds a sensitive model to PLUGINS_CONFIG.
-SAFE_OUTPUT_FIELDS: dict[str, tuple[str, ...]] = {
-    "dcim.site": (
-        *IDENTITY_FIELDS,
-        "name",
-        "slug",
-        "status",
-        "region",
-        "group",
-        "tenant",
-        "facility",
-        "physical_address",
-        "description",
-    ),
-    "dcim.location": (
-        *IDENTITY_FIELDS,
-        "name",
-        "slug",
-        "site",
-        "parent",
-        "status",
-        "tenant",
-        "facility",
-        "description",
-    ),
-    "dcim.rack": (
-        *IDENTITY_FIELDS,
-        "name",
-        "facility_id",
-        "site",
-        "location",
-        "tenant",
-        "status",
-        "role",
-        "type",
-        "width",
-        "u_height",
-        "description",
-    ),
-    "dcim.device": (
-        *IDENTITY_FIELDS,
-        "name",
-        "device_type",
-        "role",
-        "tenant",
-        "platform",
-        "serial",
-        "asset_tag",
-        "site",
-        "location",
-        "rack",
-        "position",
-        "face",
-        "status",
-        "primary_ip",
-        "primary_ip4",
-        "primary_ip6",
-        "cluster",
-        "virtual_chassis",
-        "vc_position",
-        "description",
-    ),
-    "dcim.interface": (
-        *IDENTITY_FIELDS,
-        "device",
-        "vdcs",
-        "module",
-        "name",
-        "label",
-        "type",
-        "enabled",
-        "parent",
-        "bridge",
-        "lag",
-        "mtu",
-        "mac_address",
-        "speed",
-        "duplex",
-        "mode",
-        "rf_role",
-        "description",
-        "cable",
-    ),
-    "ipam.vrf": (
-        *IDENTITY_FIELDS,
-        "name",
-        "rd",
-        "tenant",
-        "enforce_unique",
-        "description",
-    ),
-    "ipam.prefix": (
-        *IDENTITY_FIELDS,
-        "family",
-        "prefix",
-        "vrf",
-        "scope_type",
-        "scope_id",
-        "scope",
-        "tenant",
-        "vlan",
-        "status",
-        "role",
-        "is_pool",
-        "mark_utilized",
-        "description",
-    ),
-    "ipam.ipaddress": (
-        *IDENTITY_FIELDS,
-        "family",
-        "address",
-        "vrf",
-        "tenant",
-        "status",
-        "role",
-        "assigned_object_type",
-        "assigned_object_id",
-        "assigned_object",
-        "nat_inside",
-        "dns_name",
-        "description",
-    ),
-    "ipam.vlan": (
-        *IDENTITY_FIELDS,
-        "site",
-        "group",
-        "vid",
-        "name",
-        "tenant",
-        "status",
-        "role",
-        "description",
-    ),
-    "circuits.provider": (
-        *IDENTITY_FIELDS,
-        "name",
-        "slug",
-        "asn",
-        "account",
-        "portal_url",
-        "noc_contact",
-        "admin_contact",
-        "description",
-    ),
-    "circuits.circuit": (
-        *IDENTITY_FIELDS,
-        "cid",
-        "provider",
-        "provider_account",
-        "type",
-        "status",
-        "tenant",
-        "install_date",
-        "termination_date",
-        "commit_rate",
-        "description",
-    ),
-    "virtualization.cluster": (
-        *IDENTITY_FIELDS,
-        "name",
-        "type",
-        "group",
-        "status",
-        "tenant",
-        "scope_type",
-        "scope_id",
-        "scope",
-        "description",
-    ),
-    "virtualization.virtualmachine": (
-        *IDENTITY_FIELDS,
-        "name",
-        "status",
-        "site",
-        "cluster",
-        "device",
-        "role",
-        "tenant",
-        "platform",
-        "primary_ip",
-        "primary_ip4",
-        "primary_ip6",
-        "vcpus",
-        "memory",
-        "disk",
-        "description",
-    ),
-}
+# These restrictions are deliberately not configurable. Dynamic discovery must
+# never turn a newly installed model into a credential-reading side channel.
+NEVER_ALLOWED_OBJECT_TYPES = frozenset(
+    {
+        "extras.webhook",
+        "users.token",
+    }
+)
+NEVER_ALLOWED_NAME_FRAGMENTS = (
+    "api_key",
+    "apikey",
+    "auth_key",
+    "credential",
+    "password",
+    "preshared_key",
+    "private_key",
+    "secret",
+    "token",
+)
+NEVER_ALLOWED_FIELDS = frozenset(
+    {
+        "additional_headers",
+        "auth_key",
+        "body_template",
+        "data",
+        "key",
+        "local_context_data",
+        "parameters",
+        "password",
+        "postchange_data",
+        "prechange_data",
+        "preshared_key",
+        "private_key",
+        "secret",
+        "template_code",
+        "token",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectTypeCapability:
+    model: Any
+    filterset_class: Any
+    serializer_class: Any
 
 
 class LocalCurrentUserProvider(ToolProvider):
     """Read-only NetBox tools executed under the current user's object permissions."""
 
     def __init__(self, config: dict[str, Any]):
-        configured_types = config.get("allowed_object_types") or []
-        self.allowed_object_types = tuple(
-            label
-            for label in dict.fromkeys(str(value).lower() for value in configured_types)
-            if label in SAFE_OUTPUT_FIELDS
+        configured_types = config.get("allowed_object_types")
+        self.configured_allowed_object_types = (
+            None if configured_types is None else frozenset(self._normalize_config_values(configured_types))
+        )
+        self.excluded_object_types = NEVER_ALLOWED_OBJECT_TYPES | frozenset(
+            self._normalize_config_values(config.get("excluded_object_types") or [])
+        )
+        self.excluded_fields = NEVER_ALLOWED_FIELDS | frozenset(
+            self._normalize_config_values(config.get("excluded_fields") or [])
         )
         self.max_results = max(1, min(int(config.get("max_results", 50)), 50))
         self.timeout = max(0.1, float(config.get("timeout", 30)))
+        documentation_config = config.get("documentation") or {}
+        self.documentation = (
+            DocumentationIndex(documentation_config) if documentation_config.get("enabled", True) else None
+        )
+        self._capabilities = self._discover_capabilities()
+        self.allowed_object_types = tuple(self._capabilities)
 
     def list_tools(self, context: ToolContext) -> list[ToolDefinition]:
-        object_type_schema = {"type": "string", "enum": list(self.allowed_object_types)}
-        return [
+        object_type_schema = {
+            "type": "string",
+            "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+$",
+            "description": "A discovered NetBox model label in app.model form.",
+        }
+        tools = [
             ToolDefinition(
                 name="list_object_types",
-                description="List the NetBox object types available to the read-only assistant.",
-                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                description=(
+                    "Discover the core and plugin NetBox object types available to the read-only assistant. "
+                    "Use query to narrow the result by model label or translated name."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1, "maxLength": 100},
+                    },
+                    "additionalProperties": False,
+                },
             ),
             ToolDefinition(
                 name="describe_object_type",
-                description="Describe the safe output fields and registered NetBox filters for one object type.",
+                description=(
+                    "Describe the readable output fields and registered filters for a discovered core or plugin "
+                    "object type. Call this before querying an unfamiliar type."
+                ),
                 input_schema={
                     "type": "object",
                     "properties": {"object_type": object_type_schema},
@@ -240,12 +132,15 @@ class LocalCurrentUserProvider(ToolProvider):
             ToolDefinition(
                 name="query_objects",
                 description=(
-                    "Query read-only NetBox objects. Filters use the registered NetBox FilterSet semantics. "
+                    "Query read-only core or plugin NetBox objects. Filters use the registered NetBox FilterSet "
+                    "semantics. Discover unknown model labels with list_object_types and their exact fields and "
+                    "filters with describe_object_type. "
                     "Use the q filter for free-text searches on the queried object. To find objects by city, site, "
                     "or location, first query dcim.site or dcim.location with q, then filter the target object type "
                     "by the returned site_id or location_id. A target object's q filter does not necessarily search "
                     "related objects. Relationship filters such as site and location accept registered choices, not "
-                    "unverified free text. Call describe_object_type first when other filter or field names are uncertain."
+                    "unverified free text. Call describe_object_type first when other filter or field names are "
+                    "uncertain."
                 ),
                 input_schema={
                     "type": "object",
@@ -285,7 +180,158 @@ class LocalCurrentUserProvider(ToolProvider):
                     "additionalProperties": False,
                 },
             ),
+            ToolDefinition(
+                name="search_netbox",
+                description=(
+                    "Search NetBox's global object index across core and installed plugins under current-user "
+                    "permissions. Use this only to discover an object's exact model type and ID. Before answering "
+                    "with object attributes, follow every relevant match with get_object or a filtered query_objects "
+                    "call."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 2, "maxLength": 200},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            ),
         ]
+        if self.documentation and self.documentation.available:
+            tools.extend(
+                [
+                    ToolDefinition(
+                        name="search_documentation",
+                        description=(
+                            "Search the locally installed NetBox and plugin documentation. Use this for questions "
+                            "about configuration, concepts, workflows, APIs, or plugin behavior rather than guessing."
+                        ),
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string", "minLength": 2, "maxLength": 200},
+                                "limit": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": self.documentation.max_results,
+                                },
+                            },
+                            "required": ["query"],
+                            "additionalProperties": False,
+                        },
+                    ),
+                    ToolDefinition(
+                        name="read_documentation",
+                        description="Read one exact section returned by search_documentation.",
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "doc_id": {"type": "string", "minLength": 1, "maxLength": 1000},
+                            },
+                            "required": ["doc_id"],
+                            "additionalProperties": False,
+                        },
+                    ),
+                ]
+            )
+        tools.extend(
+            [
+                ToolDefinition(
+                    name="navigate_to_object",
+                    description=(
+                        "Offer a verified browser navigation action for one NetBox object the current user may view. "
+                        "Use only when the user explicitly asks to open, show, or navigate to that object."
+                    ),
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "object_type": object_type_schema,
+                            "object_id": {"type": "integer", "minimum": 1},
+                        },
+                        "required": ["object_type", "object_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDefinition(
+                    name="navigate_to_object_list",
+                    description=(
+                        "Offer navigation to the list page of a discovered NetBox core or plugin object type. "
+                        "Use only when the user explicitly requests navigation."
+                    ),
+                    input_schema={
+                        "type": "object",
+                        "properties": {"object_type": object_type_schema},
+                        "required": ["object_type"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDefinition(
+                    name="navigate_to_search",
+                    description="Offer navigation to NetBox global search for an explicit user-requested query.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 200}},
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                ),
+            ]
+        )
+        if context.can_write:
+            write_data_schema = {"type": "object", "minProperties": 1, "additionalProperties": True}
+            tools.extend(
+                [
+                    ToolDefinition(
+                        name="propose_create_object",
+                        description=(
+                            "Validate and propose creating one NetBox object. This never writes immediately and "
+                            "always requires the user to approve the exact preview in the browser."
+                        ),
+                        input_schema={
+                            "type": "object",
+                            "properties": {"object_type": object_type_schema, "data": write_data_schema},
+                            "required": ["object_type", "data"],
+                            "additionalProperties": False,
+                        },
+                    ),
+                    ToolDefinition(
+                        name="propose_update_object",
+                        description=(
+                            "Validate and propose a partial update to one NetBox object. This never writes "
+                            "immediately and always requires explicit browser approval."
+                        ),
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "object_type": object_type_schema,
+                                "object_id": {"type": "integer", "minimum": 1},
+                                "data": write_data_schema,
+                            },
+                            "required": ["object_type", "object_id", "data"],
+                            "additionalProperties": False,
+                        },
+                    ),
+                    ToolDefinition(
+                        name="propose_delete_object",
+                        description=(
+                            "Propose deleting one NetBox object. This never deletes immediately and always requires "
+                            "explicit browser approval. Use only for an unambiguous user request."
+                        ),
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "object_type": object_type_schema,
+                                "object_id": {"type": "integer", "minimum": 1},
+                            },
+                            "required": ["object_type", "object_id"],
+                            "additionalProperties": False,
+                        },
+                    ),
+                ]
+            )
+        return tools
 
     def call_tool(self, context: ToolContext, name: str, arguments: dict[str, Any]) -> Any:
         handlers = {
@@ -293,6 +339,15 @@ class LocalCurrentUserProvider(ToolProvider):
             "describe_object_type": self._describe_object_type,
             "query_objects": self._query_objects,
             "get_object": self._get_object,
+            "search_netbox": self._search_netbox,
+            "search_documentation": self._search_documentation,
+            "read_documentation": self._read_documentation,
+            "navigate_to_object": self._navigate_to_object,
+            "navigate_to_object_list": self._navigate_to_object_list,
+            "navigate_to_search": self._navigate_to_search,
+            "propose_create_object": self._propose_create_object,
+            "propose_update_object": self._propose_update_object,
+            "propose_delete_object": self._propose_delete_object,
         }
         try:
             handler = handlers[name]
@@ -300,7 +355,16 @@ class LocalCurrentUserProvider(ToolProvider):
             raise ToolNotFoundError(f"Unknown tool: {name}") from exc
         if not isinstance(arguments, dict):
             raise ToolValidationError("Tool arguments must be a JSON object.")
-        if name not in {"query_objects", "get_object"}:
+        database_tools = {
+            "query_objects",
+            "get_object",
+            "search_netbox",
+            "navigate_to_object",
+            "propose_create_object",
+            "propose_update_object",
+            "propose_delete_object",
+        }
+        if name not in database_tools:
             return handler(context, arguments)
         try:
             with transaction.atomic():
@@ -315,24 +379,29 @@ class LocalCurrentUserProvider(ToolProvider):
             raise ToolError("The tool database query failed or timed out.") from exc
 
     def _list_object_types(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
-        self._reject_extra_arguments(arguments, set())
+        self._reject_extra_arguments(arguments, {"query"})
+        query = arguments.get("query")
+        if query is not None and (not isinstance(query, str) or not query.strip() or len(query) > 100):
+            raise ToolValidationError("query must be a non-empty string with at most 100 characters.")
+        normalized_query = query.strip().casefold() if query else None
         object_types = []
-        for label in self.allowed_object_types:
-            model, _, _ = self._resolve(label, context)
-            object_types.append(
-                {
-                    "object_type": label,
-                    "name": str(model._meta.verbose_name),
-                    "name_plural": str(model._meta.verbose_name_plural),
-                }
-            )
-        return {"object_types": object_types}
+        for label, capability in self._capabilities.items():
+            model = capability.model
+            item = {
+                "object_type": label,
+                "name": str(model._meta.verbose_name),
+                "name_plural": str(model._meta.verbose_name_plural),
+            }
+            if normalized_query and normalized_query not in " ".join(item.values()).casefold():
+                continue
+            object_types.append(item)
+        return {"count": len(object_types), "object_types": object_types}
 
     def _describe_object_type(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
         self._require_arguments(arguments, {"object_type"}, {"object_type"})
         label = self._normalize_label(arguments["object_type"])
         model, filterset_class, serializer_class = self._resolve(label, context)
-        output_fields = self._supported_output_fields(label, serializer_class, context)
+        output_fields = self._supported_output_fields(serializer_class, context)
         filters = [
             {
                 "name": name,
@@ -340,12 +409,14 @@ class LocalCurrentUserProvider(ToolProvider):
                 "type": filter_.__class__.__name__,
             }
             for name, filter_ in filterset_class.base_filters.items()
+            if self._field_is_allowed(name)
         ]
         return {
             "object_type": label,
             "name": str(model._meta.verbose_name),
             "name_plural": str(model._meta.verbose_name_plural),
             "output_fields": output_fields,
+            "writable_fields": (self._supported_write_fields(serializer_class, context) if context.can_write else []),
             "filters": filters,
             "max_results": self.max_results,
         }
@@ -355,13 +426,14 @@ class LocalCurrentUserProvider(ToolProvider):
         self._require_arguments(arguments, {"object_type"}, allowed)
         label = self._normalize_label(arguments["object_type"])
         model, filterset_class, serializer_class = self._resolve(label, context)
-        fields = self._select_fields(label, serializer_class, context, arguments.get("fields"))
+        fields = self._select_fields(serializer_class, context, arguments.get("fields"))
         queryset = self._restricted_queryset(model, context)
 
         filters = arguments.get("filters") or {}
         if not isinstance(filters, dict):
             raise ToolValidationError("filters must be a JSON object.")
-        unknown_filters = set(filters) - set(filterset_class.base_filters)
+        supported_filters = {name for name in filterset_class.base_filters if self._field_is_allowed(name)}
+        unknown_filters = set(filters) - supported_filters
         if unknown_filters:
             raise ToolValidationError(f"Unsupported filters: {', '.join(sorted(unknown_filters))}")
 
@@ -376,7 +448,7 @@ class LocalCurrentUserProvider(ToolProvider):
 
         ordering = arguments.get("order_by") or []
         if ordering:
-            queryset = queryset.order_by(*self._validate_ordering(model, label, ordering))
+            queryset = queryset.order_by(*self._validate_ordering(model, serializer_class, context, ordering))
 
         limit = arguments.get("limit", self.max_results)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= self.max_results:
@@ -400,11 +472,11 @@ class LocalCurrentUserProvider(ToolProvider):
         allowed = {"object_type", "object_id", "fields"}
         self._require_arguments(arguments, {"object_type", "object_id"}, allowed)
         label = self._normalize_label(arguments["object_type"])
-        model, _, serializer_class = self._resolve(label, context)
+        model, _filterset_class, serializer_class = self._resolve(label, context)
         object_id = arguments["object_id"]
         if isinstance(object_id, bool) or not isinstance(object_id, int) or object_id < 1:
             raise ToolValidationError("object_id must be a positive integer.")
-        fields = self._select_fields(label, serializer_class, context, arguments.get("fields"))
+        fields = self._select_fields(serializer_class, context, arguments.get("fields"))
 
         # Restriction precedes lookup so an unauthorized ID is indistinguishable from a missing ID.
         instance = self._restricted_queryset(model, context).filter(pk=object_id).first()
@@ -414,36 +486,399 @@ class LocalCurrentUserProvider(ToolProvider):
         serialized = serializer_class(instance, fields=fields, context={"request": context.request}).data
         return {"object_type": label, "found": True, "object": dict(serialized)}
 
+    def _search_netbox(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._require_arguments(arguments, {"query"}, {"query", "limit"})
+        query = arguments["query"]
+        if not isinstance(query, str) or not 2 <= len(query.strip()) <= 200:
+            raise ToolValidationError("query must contain between 2 and 200 characters.")
+        limit = arguments.get("limit", 20)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+            raise ToolValidationError("limit must be between 1 and 20.")
+        results = []
+        for match in search_backend.search(query.strip(), user=context.user):
+            instance = getattr(match, "object", None)
+            label = getattr(getattr(instance, "_meta", None), "label_lower", None)
+            if instance is None or label not in self._capabilities:
+                continue
+            try:
+                display_url = self._safe_local_url(instance.get_absolute_url())
+            except (AttributeError, ToolValidationError):
+                continue
+            results.append(
+                {
+                    "id": instance.pk,
+                    "display": str(instance),
+                    "display_url": display_url,
+                    "object_type": label,
+                }
+            )
+            if len(results) >= limit:
+                break
+        return {"query": query.strip(), "returned": len(results), "objects": results}
+
+    def _search_documentation(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._require_arguments(arguments, {"query"}, {"query", "limit"})
+        if not self.documentation or not self.documentation.available:
+            raise ToolValidationError("Local documentation is not available.")
+        query = arguments["query"]
+        if not isinstance(query, str) or not 2 <= len(query.strip()) <= 200:
+            raise ToolValidationError("query must contain between 2 and 200 characters.")
+        limit = arguments.get("limit")
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= self.documentation.max_results
+        ):
+            raise ToolValidationError(f"limit must be between 1 and {self.documentation.max_results}.")
+        results = self.documentation.search(query.strip(), limit)
+        return {"query": query.strip(), "returned": len(results), "results": results}
+
+    def _read_documentation(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._require_arguments(arguments, {"doc_id"}, {"doc_id"})
+        if not self.documentation or not self.documentation.available:
+            raise ToolValidationError("Local documentation is not available.")
+        doc_id = arguments["doc_id"]
+        if not isinstance(doc_id, str) or not doc_id or len(doc_id) > 1000:
+            raise ToolValidationError("doc_id is invalid.")
+        result = self.documentation.read(doc_id)
+        if result is None:
+            raise ToolValidationError("The requested documentation section does not exist.")
+        return result
+
+    def _navigate_to_object(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._require_arguments(arguments, {"object_type", "object_id"}, {"object_type", "object_id"})
+        label = self._normalize_label(arguments["object_type"])
+        model, _filterset_class, _serializer_class = self._resolve(label, context)
+        object_id = self._positive_object_id(arguments["object_id"])
+        instance = self._restricted_queryset(model, context).filter(pk=object_id).first()
+        if instance is None:
+            raise ToolValidationError("The object does not exist or is not visible to the current user.")
+        url = instance.get_absolute_url()
+        return {
+            "object_type": label,
+            "object_id": object_id,
+            "client_action": {
+                "type": "navigate",
+                "url": self._safe_local_url(url),
+                "label": str(instance),
+            },
+        }
+
+    def _navigate_to_object_list(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._require_arguments(arguments, {"object_type"}, {"object_type"})
+        label = self._normalize_label(arguments["object_type"])
+        model, _filterset_class, _serializer_class = self._resolve(label, context)
+        permission = f"{model._meta.app_label}.view_{model._meta.model_name}"
+        if not context.user.has_perm(permission):
+            raise ToolValidationError("The current user may not view this object type.")
+        try:
+            url = get_action_url(model, action="list")
+        except NoReverseMatch as exc:
+            raise ToolValidationError("No list page is registered for this object type.") from exc
+        return {
+            "object_type": label,
+            "client_action": {
+                "type": "navigate",
+                "url": self._safe_local_url(url),
+                "label": str(model._meta.verbose_name_plural),
+            },
+        }
+
+    def _navigate_to_search(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._require_arguments(arguments, {"query"}, {"query"})
+        query = arguments["query"]
+        if not isinstance(query, str) or not query.strip() or len(query) > 200:
+            raise ToolValidationError("query must be a non-empty string with at most 200 characters.")
+        url = f"{reverse('search')}?{urlencode({'q': query.strip()})}"
+        return {
+            "query": query.strip(),
+            "client_action": {"type": "navigate", "url": url, "label": query.strip()},
+        }
+
+    def _propose_create_object(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._require_write(context)
+        self._require_arguments(arguments, {"object_type", "data"}, {"object_type", "data"})
+        label = self._normalize_label(arguments["object_type"])
+        model, _filterset_class, serializer_class = self._resolve(label, context)
+        permission = f"{model._meta.app_label}.add_{model._meta.model_name}"
+        if not context.user.has_perm(permission):
+            raise ToolValidationError("The current user may not create this object type.")
+        payload = self._validated_write_payload(serializer_class, context, arguments["data"])
+        endpoint = self._api_endpoint(model, "list")
+        self._require_endpoint_method(endpoint, "POST")
+        changes = [
+            {"field": field, "before": None, "after": self._preview_value(value)}
+            for field, value in arguments["data"].items()
+        ]
+        return self._pending_action(
+            operation="create",
+            method="POST",
+            endpoint=endpoint,
+            payload=payload,
+            object_type=label,
+            object_id=None,
+            title=_("Create {object_type}").format(object_type=str(model._meta.verbose_name)),
+            target=str(model._meta.verbose_name),
+            changes=changes,
+        )
+
+    def _propose_update_object(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._require_write(context)
+        allowed = {"object_type", "object_id", "data"}
+        self._require_arguments(arguments, allowed, allowed)
+        label = self._normalize_label(arguments["object_type"])
+        model, _filterset_class, serializer_class = self._resolve(label, context)
+        object_id = self._positive_object_id(arguments["object_id"])
+        instance = self._restricted_queryset(model, context, "change").filter(pk=object_id).first()
+        if instance is None:
+            raise ToolValidationError("The object does not exist or may not be changed by the current user.")
+        data = arguments["data"]
+        target = str(instance)
+        etag = self._object_etag(instance)
+        current = self._serialize_preview(instance, serializer_class, context, data)
+        payload = self._validated_write_payload(serializer_class, context, data, instance=instance)
+        endpoint = self._api_endpoint(model, "detail", object_id)
+        self._require_endpoint_method(endpoint, "PATCH")
+        changes = [
+            {
+                "field": field,
+                "before": self._preview_value(current.get(field)),
+                "after": self._preview_value(value),
+            }
+            for field, value in data.items()
+        ]
+        return self._pending_action(
+            operation="update",
+            method="PATCH",
+            endpoint=endpoint,
+            payload=payload,
+            object_type=label,
+            object_id=object_id,
+            title=_("Update {object}").format(object=target),
+            target=target,
+            changes=changes,
+            etag=etag,
+        )
+
+    def _propose_delete_object(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._require_write(context)
+        allowed = {"object_type", "object_id"}
+        self._require_arguments(arguments, allowed, allowed)
+        label = self._normalize_label(arguments["object_type"])
+        model, _filterset_class, _serializer_class = self._resolve(label, context)
+        object_id = self._positive_object_id(arguments["object_id"])
+        instance = self._restricted_queryset(model, context, "delete").filter(pk=object_id).first()
+        if instance is None:
+            raise ToolValidationError("The object does not exist or may not be deleted by the current user.")
+        endpoint = self._api_endpoint(model, "detail", object_id)
+        self._require_endpoint_method(endpoint, "DELETE")
+        return self._pending_action(
+            operation="delete",
+            method="DELETE",
+            endpoint=endpoint,
+            payload={"changelog_message": CHANGELOG_MESSAGE},
+            object_type=label,
+            object_id=object_id,
+            title=_("Delete {object}").format(object=str(instance)),
+            target=str(instance),
+            changes=[],
+            etag=self._object_etag(instance),
+        )
+
     def _resolve(self, label: str, context: ToolContext):
-        if label not in self.allowed_object_types:
+        capability = self._capabilities.get(label)
+        if capability is None:
             raise ToolValidationError(f"Object type is not allowed: {label}")
-        try:
-            model = apps.get_model(label)
-        except (LookupError, ValueError) as exc:
-            raise ToolValidationError(f"Unknown object type: {label}") from exc
-        filterset_class = registry["filtersets"].get(label)
-        if filterset_class is None:
-            raise ToolValidationError(f"No registered FilterSet is available for {label}.")
-        try:
-            serializer_class = get_serializer_for_model(model)
-        except Exception as exc:
-            raise ToolValidationError(f"No serializer is available for {label}.") from exc
-        return model, filterset_class, serializer_class
+        return capability.model, capability.filterset_class, capability.serializer_class
+
+    def supports_object_type(self, label: str | None) -> bool:
+        """Return whether a model label passed the dynamic read-safety checks."""
+        return bool(label and label.lower() in self._capabilities)
+
+    def _discover_capabilities(self) -> dict[str, ObjectTypeCapability]:
+        capabilities = {}
+        for model in apps.get_models():
+            label = model._meta.label_lower
+            model_name = label.rsplit(".", 1)[-1]
+            if label in self.excluded_object_types or any(term in model_name for term in NEVER_ALLOWED_NAME_FRAGMENTS):
+                continue
+            if self.configured_allowed_object_types is not None and label not in self.configured_allowed_object_types:
+                continue
+            if model._meta.abstract or not hasattr(model._default_manager, "restrict"):
+                continue
+            filterset_class = registry["filtersets"].get(label)
+            if filterset_class is None:
+                continue
+            try:
+                serializer_class = get_serializer_for_model(model)
+            except Exception:
+                continue
+            capabilities[label] = ObjectTypeCapability(model, filterset_class, serializer_class)
+        return dict(sorted(capabilities.items()))
 
     @staticmethod
-    def _restricted_queryset(model, context: ToolContext):
-        manager = model.objects
+    def _restricted_queryset(model, context: ToolContext, action: str = "view"):
+        manager = model._default_manager
         if not hasattr(manager, "restrict"):
             raise ToolValidationError("This object type does not support NetBox object permissions.")
-        return manager.restrict(context.user, "view")
+        return manager.restrict(context.user, action)
 
-    def _supported_output_fields(self, label, serializer_class, context: ToolContext) -> list[str]:
+    def _supported_output_fields(self, serializer_class, context: ToolContext) -> list[str]:
         serializer = serializer_class(context={"request": context.request})
-        serializer_fields = set(serializer.fields)
-        return [field for field in SAFE_OUTPUT_FIELDS[label] if field in serializer_fields]
+        return [name for name, field in serializer.fields.items() if self._field_is_allowed(name, field)]
 
-    def _select_fields(self, label, serializer_class, context: ToolContext, requested) -> list[str]:
-        supported = self._supported_output_fields(label, serializer_class, context)
+    def _supported_write_fields(self, serializer_class, context: ToolContext) -> list[dict[str, Any]]:
+        serializer = serializer_class(context={"request": context.request})
+        return [
+            {
+                "name": name,
+                "label": str(getattr(field, "label", None) or name),
+                "type": field.__class__.__name__,
+                "required": bool(getattr(field, "required", False)),
+                "allow_null": bool(getattr(field, "allow_null", False)),
+            }
+            for name, field in serializer.fields.items()
+            if not getattr(field, "read_only", False)
+            and name not in {*IDENTITY_FIELDS, "url"}
+            and self._write_field_is_allowed(name, field)
+        ]
+
+    def _validated_write_payload(
+        self,
+        serializer_class,
+        context: ToolContext,
+        data: Any,
+        *,
+        instance: Any | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(data, dict) or not data or len(data) > 25:
+            raise ToolValidationError("data must be a non-empty JSON object with at most 25 fields.")
+        try:
+            serialized_size = len(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+        except (TypeError, ValueError) as exc:
+            raise ToolValidationError("data must contain only JSON values.") from exc
+        if serialized_size > MAX_WRITE_PAYLOAD_CHARS:
+            raise ToolValidationError(f"data exceeds the {MAX_WRITE_PAYLOAD_CHARS}-character limit.")
+
+        supported = {field["name"] for field in self._supported_write_fields(serializer_class, context)}
+        unsupported = set(data) - supported
+        if unsupported:
+            raise ToolValidationError(f"Unsupported writable fields: {', '.join(sorted(unsupported))}")
+
+        payload = {**data, "changelog_message": CHANGELOG_MESSAGE}
+        serializer = serializer_class(
+            instance,
+            data=payload,
+            partial=instance is not None,
+            context={"request": context.request},
+        )
+        if not serializer.is_valid():
+            raise ToolValidationError(
+                "Invalid change data: "
+                + json.dumps(serializer.errors, ensure_ascii=False, default=str, separators=(",", ":"))
+            )
+        return payload
+
+    def _serialize_preview(
+        self, instance, serializer_class, context: ToolContext, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        readable = set(self._supported_output_fields(serializer_class, context))
+        fields = [*IDENTITY_FIELDS, *(field for field in data if field in readable)]
+        fields = list(dict.fromkeys(field for field in fields if field in readable))
+        return dict(serializer_class(instance, fields=fields, context={"request": context.request}).data)
+
+    def _write_field_is_allowed(self, name: str, serializer_field: Any) -> bool:
+        normalized = name.casefold()
+        source = getattr(serializer_field, "source", None)
+        return not self._name_is_blocked(normalized) and (
+            not isinstance(source, str) or not self._name_is_blocked(source.casefold().split(".", 1)[0])
+        )
+
+    @staticmethod
+    def _pending_action(
+        *,
+        operation: str,
+        method: str,
+        endpoint: str,
+        payload: dict[str, Any],
+        object_type: str,
+        object_id: int | None,
+        title: str,
+        target: str,
+        changes: list[dict[str, Any]],
+        etag: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "requires_confirmation": True,
+            "pending_action": {
+                "type": "change_approval",
+                "operation": operation,
+                "method": method,
+                "endpoint": endpoint,
+                "payload": payload,
+                "object_type": object_type,
+                "object_id": object_id,
+                "title": title,
+                "target": target,
+                "changes": changes,
+                "etag": etag,
+            },
+        }
+
+    @staticmethod
+    def _api_endpoint(model, action: str, object_id: int | None = None) -> str:
+        kwargs = {"pk": object_id} if object_id is not None else None
+        try:
+            return get_action_url(model, action=action, rest_api=True, kwargs=kwargs)
+        except NoReverseMatch as exc:
+            raise ToolValidationError(
+                f"No writable REST API endpoint is registered for {model._meta.label_lower}."
+            ) from exc
+
+    @staticmethod
+    def _require_endpoint_method(endpoint: str, method: str) -> None:
+        try:
+            match = resolve(endpoint)
+        except Exception as exc:
+            raise ToolValidationError("The REST API endpoint could not be resolved.") from exc
+        actions = getattr(match.func, "actions", {})
+        if method.lower() not in actions:
+            raise ToolValidationError(f"The object type does not support {method} through its REST API.")
+
+    @staticmethod
+    def _object_etag(instance) -> str | None:
+        timestamp = getattr(instance, "last_updated", None) or getattr(instance, "created", None)
+        return f'W/"{timestamp.isoformat()}"' if timestamp else None
+
+    @staticmethod
+    def _positive_object_id(value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ToolValidationError("object_id must be a positive integer.")
+        return value
+
+    @staticmethod
+    def _require_write(context: ToolContext) -> None:
+        if not context.can_write:
+            raise ToolValidationError("Write proposals are not available to the current user.")
+
+    @staticmethod
+    def _safe_local_url(value: Any) -> str:
+        if not isinstance(value, str) or not value.startswith("/") or value.startswith("//") or len(value) > 2048:
+            raise ToolValidationError("The navigation target is not a safe local URL.")
+        return value
+
+    @classmethod
+    def _preview_value(cls, value: Any) -> Any:
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            return value[:500]
+        if isinstance(value, list):
+            return [cls._preview_value(item) for item in value[:20]]
+        if isinstance(value, dict):
+            return {str(key)[:100]: cls._preview_value(item) for key, item in list(value.items())[:20]}
+        return str(value)[:500]
+
+    def _select_fields(self, serializer_class, context: ToolContext, requested) -> list[str]:
+        supported = self._supported_output_fields(serializer_class, context)
         if requested is None:
             return supported
         if not isinstance(requested, list) or not all(isinstance(field, str) for field in requested):
@@ -453,16 +888,40 @@ class LocalCurrentUserProvider(ToolProvider):
             raise ToolValidationError(f"Unsupported output fields: {', '.join(sorted(unsupported))}")
         return list(dict.fromkeys([*(field for field in IDENTITY_FIELDS if field in supported), *requested]))
 
-    @staticmethod
-    def _validate_ordering(model, label: str, ordering) -> list[str]:
+    def _validate_ordering(self, model, serializer_class, context: ToolContext, ordering) -> list[str]:
         if not isinstance(ordering, list) or not all(isinstance(field, str) for field in ordering):
             raise ToolValidationError("order_by must be an array of field names.")
         concrete_fields = {field.name for field in model._meta.concrete_fields}
-        allowed = concrete_fields.intersection(SAFE_OUTPUT_FIELDS[label]) | {"id"}
+        allowed = concrete_fields.intersection(self._supported_output_fields(serializer_class, context)) | {"id"}
         invalid = [field for field in ordering if not field or field.removeprefix("-") not in allowed]
         if invalid:
             raise ToolValidationError(f"Unsupported ordering fields: {', '.join(invalid)}")
         return ordering
+
+    def _field_is_allowed(self, name: str, serializer_field: Any | None = None) -> bool:
+        normalized = name.casefold()
+        base_name = normalized.split("__", 1)[0]
+        if self._name_is_blocked(normalized) or self._name_is_blocked(base_name):
+            return False
+        if serializer_field is None:
+            return True
+        if getattr(serializer_field, "write_only", False):
+            return False
+        source = getattr(serializer_field, "source", None)
+        if not isinstance(source, str):
+            return True
+        normalized_source = source.casefold()
+        source_root = normalized_source.split(".", 1)[0]
+        return not self._name_is_blocked(normalized_source) and not self._name_is_blocked(source_root)
+
+    def _name_is_blocked(self, value: str) -> bool:
+        return value in self.excluded_fields or any(term in value for term in NEVER_ALLOWED_NAME_FRAGMENTS)
+
+    @staticmethod
+    def _normalize_config_values(values: Iterable[Any]) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(str(value).strip().casefold() for value in values if isinstance(value, str) and value.strip())
+        )
 
     @staticmethod
     def _to_query_dict(filters: dict[str, Any]) -> QueryDict:

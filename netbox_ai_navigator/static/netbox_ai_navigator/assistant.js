@@ -17,6 +17,7 @@
     open_assistant: "Open NetBox AI Navigator",
     dialog_label: "NetBox AI Navigator",
     subtitle: "Read-only · your permissions",
+    subtitle_write: "Read and write · your permissions",
     expand_assistant: "Expand assistant",
     restore_assistant: "Restore assistant size",
     clear_conversation: "Clear conversation",
@@ -33,6 +34,17 @@
     reset_failed: "Reset failed with HTTP {status}.",
     conversation_cleared: "Conversation cleared. What would you like to explore?",
     conversation_clear_failed: "The conversation could not be cleared.",
+    open_navigation: "Open {label}",
+    change_requires_approval: "This change requires your confirmation.",
+    field: "Field",
+    before: "Before",
+    after: "After",
+    confirm_change: "Confirm change",
+    cancel_change: "Cancel",
+    change_cancelled: "The proposed change was cancelled.",
+    change_completed: "The approved change was completed successfully.",
+    change_failed: "The approved change could not be completed.",
+    approval_failed: "Approval failed with HTTP {status}.",
   };
   const translations = {
     ...defaultTranslations,
@@ -103,11 +115,17 @@
   const form = root.querySelector(".nbai__form");
   const input = root.querySelector("textarea");
   const sendButton = root.querySelector(".nbai__send");
+  const subtitleElement = root.querySelector(".nbai__subtitle");
   let panelSizeBeforeExpand = null;
+
+  function updateWriteCapability(canWrite) {
+    config.can_write = canWrite === true;
+    subtitleElement.textContent = translate(config.can_write ? "subtitle_write" : "subtitle");
+  }
 
   launcher.setAttribute("aria-label", translate("open_assistant"));
   panel.setAttribute("aria-label", translate("dialog_label"));
-  root.querySelector(".nbai__subtitle").textContent = translate("subtitle");
+  updateWriteCapability(config.can_write);
   clearButton.setAttribute("aria-label", translate("clear_conversation"));
   closeButton.setAttribute("aria-label", translate("close_assistant"));
   messagesElement.firstElementChild.textContent = translate("welcome");
@@ -377,6 +395,173 @@
     return message;
   }
 
+  function safeLocalURL(value) {
+    if (typeof value !== "string" || value.startsWith("//") || value.length > 2048) {
+      return null;
+    }
+    try {
+      const target = new URL(value, window.location.origin);
+      return target.origin === window.location.origin ? target : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function addNavigationAction(action) {
+    if (!action || action.type !== "navigate") {
+      return;
+    }
+    const target = safeLocalURL(action.url);
+    const label = typeof action.label === "string" ? action.label : "NetBox";
+    if (!target) {
+      return;
+    }
+    const wrapper = document.createElement("div");
+    wrapper.className = "nbai__client-action";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "nbai__action-button";
+    button.innerHTML = '<i class="mdi mdi-open-in-new" aria-hidden="true"></i>';
+    button.appendChild(document.createTextNode(translate("open_navigation", { label })));
+    button.addEventListener("click", () => window.location.assign(target.href));
+    wrapper.appendChild(button);
+    messagesElement.appendChild(wrapper);
+    messagesElement.scrollTop = messagesElement.scrollHeight;
+  }
+
+  function previewValue(value) {
+    if (value === null || value === undefined || value === "") {
+      return "—";
+    }
+    if (typeof value === "object") {
+      try {
+        return JSON.stringify(value);
+      } catch (_error) {
+        return String(value);
+      }
+    }
+    return String(value);
+  }
+
+  function appendApprovalResult(content, modifier = "") {
+    addMessage("assistant", content, modifier);
+    if (!modifier) {
+      history.push({ role: "assistant", content });
+      trimHistory();
+      persistHistory();
+    }
+  }
+
+  async function decidePendingAction(action, decision, card, buttons) {
+    if (pending || !config.approval_endpoint) {
+      return;
+    }
+    pending = true;
+    input.disabled = true;
+    sendButton.disabled = true;
+    buttons.forEach((button) => {
+      button.disabled = true;
+    });
+    try {
+      const response = await fetch(config.approval_endpoint, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": config.csrf_token,
+        },
+        body: JSON.stringify({ action_id: action.action_id, decision }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || translate("approval_failed", { status: response.status }));
+      }
+      card.classList.add("nbai__approval--resolved");
+      card.querySelector(".nbai__approval-actions")?.remove();
+      if (decision === "cancel") {
+        appendApprovalResult(translate("change_cancelled"));
+      } else {
+        appendApprovalResult(translate("change_completed"));
+        const target = safeLocalURL(data.display_url);
+        if (target) {
+          addNavigationAction({ type: "navigate", url: target.pathname, label: data.display || action.target });
+        }
+      }
+    } catch (error) {
+      appendApprovalResult(error.message || translate("change_failed"), "error");
+    } finally {
+      pending = false;
+      input.disabled = false;
+      sendButton.disabled = false;
+      input.focus();
+    }
+  }
+
+  function addPendingAction(action) {
+    if (
+      !action ||
+      action.type !== "change_approval" ||
+      typeof action.action_id !== "string" ||
+      typeof action.title !== "string"
+    ) {
+      return;
+    }
+    const card = document.createElement("section");
+    card.className = "nbai__approval";
+    const title = document.createElement("strong");
+    title.className = "nbai__approval-title";
+    title.textContent = action.title;
+    const notice = document.createElement("p");
+    notice.textContent = translate("change_requires_approval");
+    card.append(title, notice);
+
+    if (Array.isArray(action.changes) && action.changes.length) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "nbai__table-wrap";
+      const table = document.createElement("table");
+      const header = document.createElement("tr");
+      [translate("field"), translate("before"), translate("after")].forEach((value) => {
+        const cell = document.createElement("th");
+        cell.scope = "col";
+        cell.textContent = value;
+        header.appendChild(cell);
+      });
+      const head = document.createElement("thead");
+      head.appendChild(header);
+      table.appendChild(head);
+      const body = document.createElement("tbody");
+      action.changes.forEach((change) => {
+        const row = document.createElement("tr");
+        [change.field, previewValue(change.before), previewValue(change.after)].forEach((value) => {
+          const cell = document.createElement("td");
+          cell.textContent = String(value);
+          row.appendChild(cell);
+        });
+        body.appendChild(row);
+      });
+      table.appendChild(body);
+      wrapper.appendChild(table);
+      card.appendChild(wrapper);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "nbai__approval-actions";
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = "nbai__action-button nbai__action-button--confirm";
+    confirm.textContent = translate("confirm_change");
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "nbai__action-button nbai__action-button--cancel";
+    cancel.textContent = translate("cancel_change");
+    actions.append(confirm, cancel);
+    card.appendChild(actions);
+    messagesElement.appendChild(card);
+    confirm.addEventListener("click", () => decidePendingAction(action, "confirm", card, [confirm, cancel]));
+    cancel.addEventListener("click", () => decidePendingAction(action, "cancel", card, [confirm, cancel]));
+    messagesElement.scrollTop = messagesElement.scrollHeight;
+  }
+
   function addLoadingMessage() {
     const translatedLabel = translate("thinking");
     const visibleLabel = translatedLabel.replace(/[.\s…]+$/u, "") || translatedLabel;
@@ -487,11 +672,16 @@
       if (!response.ok) {
         throw new Error(data.error || translate("request_failed", { status: response.status }));
       }
+      if (typeof data.can_write === "boolean") {
+        updateWriteCapability(data.can_write);
+      }
       loading.remove();
       addMessage("assistant", data.answer);
       history.push({ role: "assistant", content: data.answer });
       trimHistory();
       persistHistory();
+      (Array.isArray(data.client_actions) ? data.client_actions : []).forEach(addNavigationAction);
+      (Array.isArray(data.pending_actions) ? data.pending_actions : []).forEach(addPendingAction);
     } catch (error) {
       loading.remove();
       addMessage("assistant", error.message || translate("assistant_unavailable"), "error");
@@ -530,6 +720,9 @@
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(data.error || translate("reset_failed", { status: response.status }));
+        }
+        if (typeof data.can_write === "boolean") {
+          updateWriteCapability(data.can_write);
         }
       }
 

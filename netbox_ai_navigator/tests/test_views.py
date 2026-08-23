@@ -7,8 +7,8 @@ from django.test import RequestFactory, SimpleTestCase, override_settings
 from netbox_ai_navigator.agent import AgentResult
 from netbox_ai_navigator.config import READ_PERMISSION, WRITE_PERMISSION
 from netbox_ai_navigator.model_providers import MyGPTApiProvider
-from netbox_ai_navigator.session_state import MYGPT_CONVERSATION_SESSION_KEY
-from netbox_ai_navigator.views import ChatView, ResetConversationView
+from netbox_ai_navigator.session_state import MYGPT_CONVERSATION_SESSION_KEY, store_pending_action
+from netbox_ai_navigator.views import ChangeApprovalView, ChatView, ResetConversationView
 
 
 class FakeUser:
@@ -45,6 +45,30 @@ class FakeMyGPTRuntime(FakeRuntime):
         )
 
 
+class FakeActionRuntime(FakeRuntime):
+    def run(self, context, messages, page_context):
+        return AgentResult(
+            answer="The validated change is awaiting confirmation.",
+            tool_calls=2,
+            client_actions=({"type": "navigate", "url": "/dcim/sites/", "label": "Sites"},),
+            pending_actions=(
+                {
+                    "type": "change_approval",
+                    "operation": "update",
+                    "method": "PATCH",
+                    "endpoint": "/api/dcim/sites/1/",
+                    "payload": {"description": "private"},
+                    "object_type": "dcim.site",
+                    "object_id": 1,
+                    "title": "Update Site A",
+                    "target": "Site A",
+                    "changes": [{"field": "description", "before": "", "after": "private"}],
+                    "etag": 'W/"timestamp"',
+                },
+            ),
+        )
+
+
 @override_settings(
     PLUGINS_CONFIG={
         "netbox_ai_navigator": {
@@ -71,6 +95,9 @@ class ChatViewTest(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(payload["tool_calls"], 1)
+        self.assertEqual(payload["client_actions"], [])
+        self.assertEqual(payload["pending_actions"], [])
+        self.assertFalse(payload["can_write"])
         self.assertNotIn("never-return-this", response.content.decode())
         self.assertIn("no-store", response["Cache-Control"])
 
@@ -136,6 +163,26 @@ class ChatViewTest(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(request.session[MYGPT_CONVERSATION_SESSION_KEY], "conversation-1")
 
+    @patch("netbox_ai_navigator.views.build_agent_runtime", return_value=FakeActionRuntime())
+    def test_returns_public_actions_but_keeps_execution_payload_in_session(self, _build_runtime):
+        request = self.factory.post(
+            "/plugins/ai-navigator/api/chat/",
+            data=json.dumps({"messages": [{"role": "user", "content": "Change Site A"}]}),
+            content_type="application/json",
+        )
+        request.user = FakeUser(permissions=[WRITE_PERMISSION])
+        request.session = {}
+
+        response = ChatView.as_view()(request)
+        payload = json.loads(response.content)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["can_write"])
+        self.assertEqual(payload["client_actions"][0]["url"], "/dcim/sites/")
+        self.assertNotIn("endpoint", payload["pending_actions"][0])
+        self.assertNotIn("payload", payload["pending_actions"][0])
+        self.assertNotIn("/api/dcim/sites/1/", response.content.decode())
+
 
 @override_settings(
     PLUGINS_CONFIG={
@@ -165,8 +212,47 @@ class ResetConversationViewTest(SimpleTestCase):
         request.session = {MYGPT_CONVERSATION_SESSION_KEY: "conversation-1"}
 
         response = ResetConversationView.as_view()(request)
+        payload = json.loads(response.content)
 
         self.assertEqual(response.status_code, 200)
+        self.assertFalse(payload["can_write"])
         self.assertNotIn(MYGPT_CONVERSATION_SESSION_KEY, request.session)
         provider_class.assert_called_once()
         provider_class.return_value.delete_conversation.assert_called_once_with()
+
+
+@override_settings(
+    PLUGINS_CONFIG={
+        "netbox_ai_navigator": {
+            "enabled": True,
+            "model": {"api_key": "unused", "model": "test-model"},
+        }
+    }
+)
+class ChangeApprovalViewTest(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def test_cancel_discards_server_stored_action(self):
+        request = self.factory.post(
+            "/plugins/ai-navigator/api/actions/approve/",
+            data="{}",
+            content_type="application/json",
+        )
+        request.user = FakeUser(permissions=[WRITE_PERMISSION])
+        request.session = {}
+        public = store_pending_action(request, {"operation": "delete"})
+        session = request.session
+        request = self.factory.post(
+            "/plugins/ai-navigator/api/actions/approve/",
+            data=json.dumps({"action_id": public["action_id"], "decision": "cancel"}),
+            content_type="application/json",
+        )
+        request.user = FakeUser(permissions=[WRITE_PERMISSION])
+        request.session = session
+
+        response = ChangeApprovalView.as_view()(request)
+        payload = json.loads(response.content)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["cancelled"])

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.test import RequestFactory, SimpleTestCase
 
@@ -18,17 +19,128 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
         request.user = SimpleNamespace()
         self.context = ToolContext(request=request, user=request.user)
 
-    def test_code_allowlist_excludes_sensitive_model_and_caps_results(self):
-        self.assertEqual(self.provider.allowed_object_types, ("dcim.device",))
+    def test_configured_allowlist_is_dynamic_and_caps_results(self):
+        self.assertEqual(self.provider.allowed_object_types, ("dcim.device", "users.user"))
         self.assertEqual(self.provider.max_results, 50)
 
-    def test_only_four_read_tools_are_exposed(self):
+    def test_discovers_compatible_core_models_and_blocks_credential_models(self):
+        provider = LocalCurrentUserProvider({})
+
+        self.assertIn("dcim.device", provider.allowed_object_types)
+        self.assertIn("tenancy.tenant", provider.allowed_object_types)
+        self.assertIn("wireless.wirelesslan", provider.allowed_object_types)
+        self.assertNotIn("users.token", provider.allowed_object_types)
+        self.assertNotIn("extras.webhook", provider.allowed_object_types)
+
+    def test_administrator_can_exclude_discovered_types_and_fields(self):
+        provider = LocalCurrentUserProvider(
+            {
+                "excluded_object_types": ["tenancy.tenant"],
+                "excluded_fields": ["email"],
+            }
+        )
+
+        self.assertNotIn("tenancy.tenant", provider.allowed_object_types)
+        description = provider.call_tool(self.context, "describe_object_type", {"object_type": "users.user"})
+        self.assertNotIn("email", description["output_fields"])
+        self.assertNotIn("password", description["output_fields"])
+
+    def test_discovers_plugin_model_from_standard_netbox_registries(self):
+        readable = SimpleNamespace(write_only=False, source="name")
+        write_only = SimpleNamespace(write_only=True, source="password")
+
+        class PluginSerializer:
+            def __init__(self, *args, **kwargs):
+                self.fields = {
+                    "id": readable,
+                    "display": readable,
+                    "name": readable,
+                    "secret": readable,
+                    "password": write_only,
+                }
+
+        plugin_filterset = SimpleNamespace(
+            base_filters={
+                "q": SimpleNamespace(label="Search"),
+                "secret": SimpleNamespace(label="Secret"),
+            }
+        )
+        plugin_model = SimpleNamespace(
+            _meta=SimpleNamespace(
+                label_lower="example_plugin.widget",
+                verbose_name="widget",
+                verbose_name_plural="widgets",
+                abstract=False,
+            ),
+            _default_manager=SimpleNamespace(restrict=lambda *args: None),
+        )
+        credential_model = SimpleNamespace(
+            _meta=SimpleNamespace(
+                label_lower="example_plugin.apitoken",
+                verbose_name="API token",
+                verbose_name_plural="API tokens",
+                abstract=False,
+            ),
+            _default_manager=SimpleNamespace(restrict=lambda *args: None),
+        )
+
+        with (
+            patch(
+                "netbox_ai_navigator.tool_providers.local_current_user.apps.get_models",
+                return_value=[plugin_model, credential_model],
+            ),
+            patch(
+                "netbox_ai_navigator.tool_providers.local_current_user.registry",
+                {
+                    "filtersets": {
+                        "example_plugin.widget": plugin_filterset,
+                        "example_plugin.apitoken": plugin_filterset,
+                    }
+                },
+            ),
+            patch(
+                "netbox_ai_navigator.tool_providers.local_current_user.get_serializer_for_model",
+                return_value=PluginSerializer,
+            ),
+        ):
+            provider = LocalCurrentUserProvider({})
+
+        result = provider.call_tool(self.context, "list_object_types", {"query": "widget"})
+        description = provider.call_tool(
+            self.context,
+            "describe_object_type",
+            {"object_type": "example_plugin.widget"},
+        )
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["object_types"][0]["object_type"], "example_plugin.widget")
+        self.assertNotIn("example_plugin.apitoken", provider.allowed_object_types)
+        self.assertEqual(description["output_fields"], ["id", "display", "name"])
+        self.assertEqual([item["name"] for item in description["filters"]], ["q"])
+
+    def test_read_documentation_and_navigation_tools_are_exposed_without_write_tools(self):
         tools = self.provider.list_tools(self.context)
         self.assertEqual(
             {tool.name for tool in tools},
-            {"list_object_types", "describe_object_type", "query_objects", "get_object"},
+            {
+                "list_object_types",
+                "describe_object_type",
+                "query_objects",
+                "get_object",
+                "search_netbox",
+                "search_documentation",
+                "read_documentation",
+                "navigate_to_object",
+                "navigate_to_object_list",
+                "navigate_to_search",
+            },
         )
         query_description = next(tool.description for tool in tools if tool.name == "query_objects")
+        query_tool = next(tool for tool in tools if tool.name == "query_objects")
+        object_type_schema = query_tool.input_schema["properties"]["object_type"]
+        self.assertNotIn("enum", object_type_schema)
+        self.assertEqual(object_type_schema["pattern"], "^[a-z0-9_]+\\.[a-z0-9_]+$")
+        self.assertIn("core or plugin", query_description)
         self.assertIn("q filter for free-text searches on the queried object", query_description)
         self.assertIn("returned site_id or location_id", query_description)
         self.assertIn("site and location accept registered choices", query_description)
@@ -40,3 +152,57 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
     def test_extra_arguments_are_rejected(self):
         with self.assertRaises(ToolValidationError):
             self.provider.call_tool(self.context, "list_object_types", {"model": "users.user"})
+
+    def test_empty_object_type_search_is_rejected(self):
+        with self.assertRaises(ToolValidationError):
+            self.provider.call_tool(self.context, "list_object_types", {"query": " "})
+
+    def test_write_tools_require_explicit_write_context(self):
+        write_context = ToolContext(request=self.context.request, user=self.context.user, can_write=True)
+
+        read_tools = {tool.name for tool in self.provider.list_tools(self.context)}
+        write_tools = {tool.name for tool in self.provider.list_tools(write_context)}
+
+        self.assertFalse(any(name.startswith("propose_") for name in read_tools))
+        self.assertTrue(
+            {
+                "propose_create_object",
+                "propose_update_object",
+                "propose_delete_object",
+            }.issubset(write_tools)
+        )
+
+    def test_navigation_search_returns_verified_local_action(self):
+        result = self.provider.call_tool(self.context, "navigate_to_search", {"query": "edge router"})
+
+        self.assertEqual(result["client_action"]["type"], "navigate")
+        self.assertEqual(result["client_action"]["url"], "/search/?q=edge+router")
+
+    @patch("netbox_ai_navigator.tool_providers.local_current_user.search_backend.search")
+    def test_global_search_returns_only_discovered_object_identity(self, search):
+        class DeviceResult:
+            pk = 42
+            _meta = SimpleNamespace(label_lower="dcim.device")
+
+            def __str__(self):
+                return "edge-router-01"
+
+            def get_absolute_url(self):
+                return "/dcim/devices/42/"
+
+        search.return_value = [SimpleNamespace(object=DeviceResult())]
+
+        result = self.provider._search_netbox(self.context, {"query": "edge-router"})
+
+        self.assertEqual(
+            result["objects"],
+            [
+                {
+                    "id": 42,
+                    "display": "edge-router-01",
+                    "display_url": "/dcim/devices/42/",
+                    "object_type": "dcim.device",
+                }
+            ],
+        )
+        search.assert_called_once_with("edge-router", user=self.context.user)

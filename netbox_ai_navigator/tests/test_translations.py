@@ -12,7 +12,9 @@ class UITranslationTest(SimpleTestCase):
             write_permission = gettext("Use AI Navigator with write capabilities")
 
         self.assertEqual(translations["subtitle"], "Nur Lesen · Ihre Berechtigungen")
+        self.assertEqual(translations["subtitle_write"], "Lesen und Schreiben · Ihre Berechtigungen")
         self.assertEqual(translations["send"], "Senden")
+        self.assertEqual(translations["confirm_change"], "Änderung bestätigen")
         self.assertEqual(translations["expand_assistant"], "Assistent vergrößern")
         self.assertEqual(
             read_permission,
@@ -33,8 +35,7 @@ class UITranslationTest(SimpleTestCase):
     def test_translates_grounding_error(self):
         with override("de"):
             message = gettext(
-                "The model response could not be verified against NetBox data. "
-                "Please retry or refine the request."
+                "The model response could not be verified against NetBox data. Please retry or refine the request."
             )
 
         self.assertEqual(

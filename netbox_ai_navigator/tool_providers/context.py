@@ -10,3 +10,4 @@ class ToolContext:
     user: Any
     current_object_type: str | None = None
     current_object_id: int | None = None
+    can_write: bool = False

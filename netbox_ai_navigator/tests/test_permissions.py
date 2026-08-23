@@ -1,3 +1,5 @@
+import json
+
 from core.models import ObjectType
 from dcim.models import Site
 from django.contrib.auth import get_user_model
@@ -5,9 +7,12 @@ from django.test import RequestFactory, TestCase
 from users.models import ObjectPermission
 
 from netbox_ai_navigator.config import user_can_read_assistant, user_can_write_assistant
+from netbox_ai_navigator.exceptions import ToolValidationError
 from netbox_ai_navigator.models import AINavigator
+from netbox_ai_navigator.session_state import store_pending_action
 from netbox_ai_navigator.template_content import GlobalAssistantExtension
 from netbox_ai_navigator.tool_providers import LocalCurrentUserProvider, ToolContext
+from netbox_ai_navigator.views import ChangeApprovalView
 
 
 class NavigatorCapabilityPermissionTest(TestCase):
@@ -50,6 +55,12 @@ class NavigatorCapabilityPermissionTest(TestCase):
         self.assertFalse(user_can_read_assistant(self.read_user, disabled))
         self.assertFalse(user_can_write_assistant(self.write_user, disabled))
 
+    def test_write_kill_switch_preserves_read_but_disables_changes(self):
+        write_disabled = {"enabled": True, "tools": {"write": {"enabled": False}}}
+
+        self.assertTrue(user_can_read_assistant(self.write_user, write_disabled))
+        self.assertFalse(user_can_write_assistant(self.write_user, write_disabled))
+
 
 class CurrentUserRBACIntegrationTest(TestCase):
     @classmethod
@@ -58,6 +69,19 @@ class CurrentUserRBACIntegrationTest(TestCase):
         cls.hidden_site = Site.objects.create(name="Hidden site", slug="hidden-site", status="active")
         cls.limited_user = get_user_model().objects.create_user(username="limited-user")
         cls.other_user = get_user_model().objects.create_user(username="other-user")
+        cls.superuser = get_user_model().objects.create_superuser(
+            username="navigator-superuser",
+            email="navigator@example.test",
+            password="test-password",
+        )
+        cls.navigator_only_writer = get_user_model().objects.create_user(username="navigator-only-writer")
+        navigator_type = ObjectType.objects.get_for_model(AINavigator)
+        navigator_permission = ObjectPermission.objects.create(
+            name="Use writable Navigator without Site change permission",
+            actions=["use_write"],
+        )
+        navigator_permission.users.add(cls.navigator_only_writer)
+        navigator_permission.object_types.add(navigator_type)
 
         permission = ObjectPermission.objects.create(
             name="View one site",
@@ -74,6 +98,24 @@ class CurrentUserRBACIntegrationTest(TestCase):
     def context_for(self, user):
         self.request.user = user
         return ToolContext(request=self.request, user=user)
+
+    def write_context_for(self, user):
+        self.request.user = user
+        return ToolContext(request=self.request, user=user, can_write=True)
+
+    def approve(self, user, action):
+        session_request = self.request
+        session_request.session = {}
+        public = store_pending_action(session_request, action)
+        request = RequestFactory().post(
+            "/plugins/ai-navigator/api/actions/approve/",
+            data=json.dumps({"action_id": public["action_id"], "decision": "confirm"}),
+            content_type="application/json",
+            HTTP_HOST="testserver",
+        )
+        request.user = user
+        request.session = session_request.session
+        return ChangeApprovalView.as_view()(request)
 
     def test_query_returns_only_objects_visible_to_current_user(self):
         result = self.provider.call_tool(
@@ -101,3 +143,98 @@ class CurrentUserRBACIntegrationTest(TestCase):
         )
 
         self.assertEqual(result["objects"], [])
+
+    def test_navigation_only_targets_visible_object(self):
+        result = self.provider.call_tool(
+            self.context_for(self.limited_user),
+            "navigate_to_object",
+            {"object_type": "dcim.site", "object_id": self.visible_site.pk},
+        )
+
+        self.assertEqual(result["client_action"]["url"], self.visible_site.get_absolute_url())
+        with self.assertRaises(ToolValidationError):
+            self.provider.call_tool(
+                self.context_for(self.limited_user),
+                "navigate_to_object",
+                {"object_type": "dcim.site", "object_id": self.hidden_site.pk},
+            )
+
+    def test_update_is_validated_but_not_written_until_approved(self):
+        proposed = self.provider.call_tool(
+            self.write_context_for(self.superuser),
+            "propose_update_object",
+            {
+                "object_type": "dcim.site",
+                "object_id": self.visible_site.pk,
+                "data": {"description": "Approved description"},
+            },
+        )
+        self.visible_site.refresh_from_db()
+        self.assertNotEqual(self.visible_site.description, "Approved description")
+
+        response = self.approve(self.superuser, proposed["pending_action"])
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.visible_site.refresh_from_db()
+        self.assertEqual(self.visible_site.description, "Approved description")
+
+    def test_navigator_write_capability_does_not_bypass_object_change_permission(self):
+        self.assertTrue(user_can_write_assistant(self.navigator_only_writer))
+
+        with self.assertRaises(ToolValidationError):
+            self.provider.call_tool(
+                self.write_context_for(self.navigator_only_writer),
+                "propose_update_object",
+                {
+                    "object_type": "dcim.site",
+                    "object_id": self.visible_site.pk,
+                    "data": {"description": "Must not be written"},
+                },
+            )
+
+        self.visible_site.refresh_from_db()
+        self.assertNotEqual(self.visible_site.description, "Must not be written")
+
+    def test_concurrent_change_invalidates_approved_proposal(self):
+        proposed = self.provider.call_tool(
+            self.write_context_for(self.superuser),
+            "propose_update_object",
+            {
+                "object_type": "dcim.site",
+                "object_id": self.visible_site.pk,
+                "data": {"description": "Stale proposed description"},
+            },
+        )
+        self.visible_site.description = "Concurrent description"
+        self.visible_site.save()
+
+        response = self.approve(self.superuser, proposed["pending_action"])
+
+        self.assertEqual(response.status_code, 412, response.content)
+        self.visible_site.refresh_from_db()
+        self.assertEqual(self.visible_site.description, "Concurrent description")
+
+    def test_create_and_delete_use_netbox_api_after_each_confirmation(self):
+        create = self.provider.call_tool(
+            self.write_context_for(self.superuser),
+            "propose_create_object",
+            {
+                "object_type": "dcim.site",
+                "data": {"name": "AI approved site", "slug": "ai-approved-site", "status": "active"},
+            },
+        )
+
+        create_response = self.approve(self.superuser, create["pending_action"])
+        self.assertEqual(create_response.status_code, 200, create_response.content)
+        created_id = json.loads(create_response.content)["object_id"]
+        self.assertTrue(Site.objects.filter(pk=created_id).exists())
+
+        delete = self.provider.call_tool(
+            self.write_context_for(self.superuser),
+            "propose_delete_object",
+            {"object_type": "dcim.site", "object_id": created_id},
+        )
+        delete_response = self.approve(self.superuser, delete["pending_action"])
+
+        self.assertEqual(delete_response.status_code, 200, delete_response.content)
+        self.assertFalse(Site.objects.filter(pk=created_id).exists())

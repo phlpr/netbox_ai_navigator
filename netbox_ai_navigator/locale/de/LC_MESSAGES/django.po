@@ -30,6 +30,9 @@ msgstr "AI Navigator mit Schreibberechtigung verwenden"
 msgid "Read-only · your permissions"
 msgstr "Nur Lesen · Ihre Berechtigungen"
 
+msgid "Read and write · your permissions"
+msgstr "Lesen und Schreiben · Ihre Berechtigungen"
+
 msgid "Expand assistant"
 msgstr "Assistent vergrößern"
 
@@ -77,6 +80,48 @@ msgstr "Die Unterhaltung wurde zurückgesetzt. Was möchten Sie untersuchen?"
 
 msgid "The conversation could not be cleared."
 msgstr "Die Unterhaltung konnte nicht zurückgesetzt werden."
+
+msgid "Open {label}"
+msgstr "{label} öffnen"
+
+msgid "This change requires your confirmation."
+msgstr "Diese Änderung erfordert Ihre Bestätigung."
+
+msgid "Field"
+msgstr "Feld"
+
+msgid "Before"
+msgstr "Vorher"
+
+msgid "After"
+msgstr "Nachher"
+
+msgid "Confirm change"
+msgstr "Änderung bestätigen"
+
+msgid "Cancel"
+msgstr "Abbrechen"
+
+msgid "The proposed change was cancelled."
+msgstr "Die vorgeschlagene Änderung wurde abgebrochen."
+
+msgid "The approved change was completed successfully."
+msgstr "Die bestätigte Änderung wurde erfolgreich durchgeführt."
+
+msgid "The approved change could not be completed."
+msgstr "Die bestätigte Änderung konnte nicht durchgeführt werden."
+
+msgid "Approval failed with HTTP {status}."
+msgstr "Die Bestätigung ist mit HTTP {status} fehlgeschlagen."
+
+msgid "Create {object_type}"
+msgstr "{object_type} erstellen"
+
+msgid "Update {object}"
+msgstr "{object} ändern"
+
+msgid "Delete {object}"
+msgstr "{object} löschen"
 
 msgid "The model response could not be verified against NetBox data. Please retry or refine the request."
 msgstr "Die Modellantwort konnte nicht anhand der NetBox-Daten verifiziert werden. Bitte versuchen Sie es erneut oder präzisieren Sie die Anfrage."

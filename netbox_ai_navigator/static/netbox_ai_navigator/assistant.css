@@ -334,6 +334,83 @@
   color: var(--tblr-danger, #d63939);
 }
 
+.nbai__client-action,
+.nbai__approval {
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.nbai__client-action {
+  padding-left: 0.1rem;
+}
+
+.nbai__approval {
+  background: color-mix(in srgb, var(--nbai-accent) 7%, var(--nbai-bg));
+  border: 1px solid color-mix(in srgb, var(--nbai-accent) 35%, var(--nbai-border));
+  border-radius: 0.65rem;
+  padding: 0.7rem;
+  width: 100%;
+}
+
+.nbai__approval--resolved {
+  opacity: 0.72;
+}
+
+.nbai__approval-title {
+  display: block;
+  font-size: 0.875rem;
+  margin-bottom: 0.25rem;
+}
+
+.nbai__approval p {
+  color: var(--nbai-muted);
+  font-size: 0.78rem;
+  margin: 0 0 0.55rem;
+}
+
+.nbai__approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+
+.nbai__action-button {
+  align-items: center;
+  background: var(--nbai-bg);
+  border: 1px solid var(--nbai-border);
+  border-radius: 0.45rem;
+  color: var(--nbai-text);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 600;
+  gap: 0.35rem;
+  min-height: 2rem;
+  padding: 0.35rem 0.6rem;
+}
+
+.nbai__action-button:hover,
+.nbai__action-button:focus-visible {
+  background: var(--nbai-muted-bg);
+  border-color: var(--nbai-accent);
+}
+
+.nbai__action-button--confirm {
+  background: var(--nbai-accent);
+  border-color: var(--nbai-accent);
+  color: var(--nbai-accent-fg);
+}
+
+.nbai__action-button--cancel {
+  color: var(--nbai-muted);
+}
+
+.nbai__action-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .nbai__message a {
   color: var(--nbai-accent);
   font-weight: 600;

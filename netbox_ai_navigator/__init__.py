@@ -8,7 +8,7 @@ __version__ = "0.1.0"
 class NetBoxAINavigatorConfig(PluginConfig):
     name = "netbox_ai_navigator"
     verbose_name = "NetBox AI Navigator"
-    description = "Explore NetBox data through a read-only, RBAC-aware AI assistant."
+    description = "Explore and safely operate NetBox through an RBAC-aware AI assistant."
     version = __version__
     author = "phlpr"
     base_url = "ai-navigator"

@@ -214,6 +214,20 @@ class MyGPTApiProviderTest(SimpleTestCase):
         self.assertIn('"name":"query_objects"', prompt)
         self.assertIn('"role":"user"', prompt)
 
+    def test_controller_prompt_reflects_available_write_tools(self):
+        read_tools = [{"type": "function", "function": {"name": "query_objects"}}]
+        write_tools = [
+            *read_tools,
+            {"type": "function", "function": {"name": "propose_update_object"}},
+        ]
+
+        read_prompt = MyGPTApiProvider._build_prompt([{"role": "user", "content": "List sites"}], read_tools)
+        write_prompt = MyGPTApiProvider._build_prompt([{"role": "user", "content": "Update a site"}], write_tools)
+
+        self.assertIn("This session is read-only because no proposal tools are listed.", read_prompt)
+        self.assertIn("This session supports staged change proposals", write_prompt)
+        self.assertNotIn("controller for the read-only NetBox AI Navigator", write_prompt)
+
     def test_parses_final_protocol_response(self):
         session = self.successful_session('{"type":"final","content":"There is one site."}')
         provider = MyGPTApiProvider(self.config, session=session)

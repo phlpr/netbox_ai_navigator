@@ -3,9 +3,9 @@ from django.urls import reverse
 from django.utils.translation import gettext as _
 from netbox.plugins import PluginTemplateExtension
 
-from .config import get_plugin_settings, user_can_read_assistant
+from .config import get_plugin_settings, user_can_read_assistant, user_can_write_assistant
 from .session_state import get_or_create_browser_storage_token
-from .tool_providers.local_current_user import SAFE_OUTPUT_FIELDS
+from .tool_providers.local_current_user import LocalCurrentUserProvider
 
 
 def get_ui_translations() -> dict[str, str]:
@@ -13,6 +13,7 @@ def get_ui_translations() -> dict[str, str]:
         "open_assistant": _("Open NetBox AI Navigator"),
         "dialog_label": _("NetBox AI Navigator"),
         "subtitle": _("Read-only · your permissions"),
+        "subtitle_write": _("Read and write · your permissions"),
         "expand_assistant": _("Expand assistant"),
         "restore_assistant": _("Restore assistant size"),
         "clear_conversation": _("Clear conversation"),
@@ -29,6 +30,17 @@ def get_ui_translations() -> dict[str, str]:
         "reset_failed": _("Reset failed with HTTP {status}."),
         "conversation_cleared": _("Conversation cleared. What would you like to explore?"),
         "conversation_clear_failed": _("The conversation could not be cleared."),
+        "open_navigation": _("Open {label}"),
+        "change_requires_approval": _("This change requires your confirmation."),
+        "field": _("Field"),
+        "before": _("Before"),
+        "after": _("After"),
+        "confirm_change": _("Confirm change"),
+        "cancel_change": _("Cancel"),
+        "change_cancelled": _("The proposed change was cancelled."),
+        "change_completed": _("The approved change was completed successfully."),
+        "change_failed": _("The approved change could not be completed."),
+        "approval_failed": _("Approval failed with HTTP {status}."),
     }
 
 
@@ -39,18 +51,20 @@ class GlobalAssistantExtension(PluginTemplateExtension):
         if not user_can_read_assistant(request.user, plugin_settings):
             return ""
 
-        allowed_types = set(plugin_settings["tools"].get("allowed_object_types") or []).intersection(SAFE_OUTPUT_FIELDS)
         current = self.context.get("object")
         model = current.__class__ if current is not None else self.context.get("model")
         object_type = model._meta.label_lower if model is not None and hasattr(model, "_meta") else None
-        if object_type not in allowed_types:
+        tool_provider = LocalCurrentUserProvider(plugin_settings["tools"])
+        if not tool_provider.supports_object_type(object_type):
             object_type = None
 
         bootstrap = {
             "endpoint": reverse("plugins:netbox_ai_navigator:chat"),
             "reset_endpoint": reverse("plugins:netbox_ai_navigator:reset_conversation"),
+            "approval_endpoint": reverse("plugins:netbox_ai_navigator:approve_action"),
             "csrf_token": get_token(request),
             "storage_token": get_or_create_browser_storage_token(request),
+            "can_write": user_can_write_assistant(request.user, plugin_settings),
             "translations": get_ui_translations(),
             "page_context": {
                 "object_type": object_type,

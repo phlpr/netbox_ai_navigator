@@ -43,8 +43,9 @@ class FakeToolProvider(ToolProvider):
 
 
 class FakeDeviceToolProvider(ToolProvider):
-    def __init__(self, objects):
+    def __init__(self, objects, object_type="dcim.device"):
         self.objects = objects
+        self.object_type = object_type
         self.calls = []
 
     def list_tools(self, context):
@@ -61,11 +62,82 @@ class FakeDeviceToolProvider(ToolProvider):
         if name != "query_objects":
             raise ToolNotFoundError(f"Unknown tool: {name}")
         return {
-            "object_type": "dcim.device",
+            "object_type": self.object_type,
             "returned": len(self.objects),
             "limit": 50,
             "objects": self.objects,
         }
+
+
+class FakeSearchThenDetailToolProvider(ToolProvider):
+    def __init__(self, objects):
+        self.objects = objects
+        self.calls = []
+
+    def list_tools(self, context):
+        return [
+            ToolDefinition(
+                name="search_netbox",
+                description="Discover matching objects.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+            ToolDefinition(
+                name="get_object",
+                description="Get one matching object.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+        ]
+
+    def call_tool(self, context, name, arguments):
+        self.calls.append((name, arguments))
+        if name == "search_netbox":
+            return {
+                "query": "graz",
+                "returned": len(self.objects),
+                "objects": [
+                    {
+                        "id": item["id"],
+                        "display": item["display"],
+                        "display_url": item["display_url"],
+                        "object_type": "dcim.device",
+                    }
+                    for item in self.objects
+                ],
+            }
+        if name == "get_object":
+            item = next(value for value in self.objects if value["id"] == arguments["object_id"])
+            return {"object_type": "dcim.device", "found": True, "object": item}
+        raise ToolNotFoundError(name)
+
+
+class FakeActionToolProvider(ToolProvider):
+    def list_tools(self, context):
+        return [
+            ToolDefinition(
+                name="offer_navigation",
+                description="Offer navigation.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+            ToolDefinition(
+                name="propose_change",
+                description="Propose change.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+        ]
+
+    def call_tool(self, context, name, arguments):
+        if name == "offer_navigation":
+            return {"client_action": {"type": "navigate", "url": "/dcim/devices/4/", "label": "Device"}}
+        if name == "propose_change":
+            return {
+                "requires_confirmation": True,
+                "pending_action": {
+                    "type": "change_approval",
+                    "operation": "update",
+                    "endpoint": "/api/dcim/devices/4/",
+                },
+            }
+        raise ToolNotFoundError(name)
 
 
 GRAZ_DEVICES = [
@@ -144,6 +216,14 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertIn("no more than five relevant columns", system_message["content"])
         self.assertIn("Never create a separate Link or URL column", system_message["content"])
         self.assertIn("For device tables", system_message["content"])
+        self.assertIn("core applications and installed plugins are discovered dynamically", system_message["content"])
+        self.assertIn("use list_object_types", system_message["content"])
+        self.assertIn("Treat plugin object types exactly like core object types", system_message["content"])
+        self.assertIn("Use search_netbox", system_message["content"])
+        self.assertIn("Use search_documentation", system_message["content"])
+        self.assertIn("Use navigation tools only", system_message["content"])
+        self.assertIn("Write-proposal tools are available only", system_message["content"])
+        self.assertIn("awaiting manual confirmation", system_message["content"])
         self.assertIn("prefer the `q` filter", system_message["content"])
         self.assertIn("returned numeric `site_id` or `location_id`", system_message["content"])
         self.assertIn("common English or", system_message["content"])
@@ -153,10 +233,16 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertIn("Do not emit raw JSON", system_message["content"])
 
     def test_accepts_table_grounded_in_query_result(self):
-        answer = """| Device | Site | Role | Status | Primary IPv4 |
-| --- | --- | --- | --- | --- |
-| [gv-graz-access-01](http://testserver/dcim/devices/4/) | [GeoView Graz Edge](http://testserver/dcim/sites/2/) | GeoView Access Switch | Active | — |
-| [gv-graz-fw-01](http://testserver/dcim/devices/3/) | [GeoView Graz Edge](http://testserver/dcim/sites/2/) | GeoView Firewall | Active | — |"""
+        answer = "\n".join(
+            (
+                "| Device | Site | Role | Status | Primary IPv4 |",
+                "| --- | --- | --- | --- | --- |",
+                "| [gv-graz-access-01](http://testserver/dcim/devices/4/) | "
+                "[GeoView Graz Edge](http://testserver/dcim/sites/2/) | GeoView Access Switch | Active | — |",
+                "| [gv-graz-fw-01](http://testserver/dcim/devices/3/) | "
+                "[GeoView Graz Edge](http://testserver/dcim/sites/2/) | GeoView Firewall | Active | — |",
+            )
+        )
         model = FakeModelProvider(
             [
                 ModelResponse(tool_calls=[ModelToolCall("call-1", "query_objects", {})]),
@@ -168,6 +254,91 @@ class AgentRuntimeTest(SimpleTestCase):
         result = runtime.run(self.context, [{"role": "user", "content": "List Graz devices."}])
 
         self.assertEqual(result.answer, answer)
+
+    def test_global_search_is_refined_before_returning_object_attributes(self):
+        answer = "\n".join(
+            (
+                "| Device | Site | Role | Status |",
+                "| --- | --- | --- | --- |",
+                "| [gv-graz-access-01](http://testserver/dcim/devices/4/) | GeoView Graz Edge | "
+                "GeoView Access Switch | Active |",
+                "| [gv-graz-fw-01](http://testserver/dcim/devices/3/) | GeoView Graz Edge | "
+                "GeoView Firewall | Active |",
+            )
+        )
+        model = FakeModelProvider(
+            [
+                ModelResponse(tool_calls=[ModelToolCall("call-1", "search_netbox", {"query": "graz"})]),
+                ModelResponse(content="I found two matching devices."),
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "call-2",
+                            "get_object",
+                            {"object_type": "dcim.device", "object_id": 4, "fields": ["site", "role", "status"]},
+                        ),
+                        ModelToolCall(
+                            "call-3",
+                            "get_object",
+                            {"object_type": "dcim.device", "object_id": 3, "fields": ["site", "role", "status"]},
+                        ),
+                    ]
+                ),
+                ModelResponse(content=answer),
+            ]
+        )
+        tools = FakeSearchThenDetailToolProvider(GRAZ_DEVICES)
+        runtime = AgentRuntime(model, tools)
+
+        result = runtime.run(self.context, [{"role": "user", "content": "Show the matching device status."}])
+
+        self.assertEqual(result.answer, answer)
+        self.assertEqual(result.tool_calls, 3)
+        self.assertEqual([name for name, _arguments in tools.calls], ["search_netbox", "get_object", "get_object"])
+        refinement_messages = [
+            message
+            for message in model.calls[2][0]
+            if message["role"] == "system" and message["content"].startswith("The successful search_netbox result")
+        ]
+        self.assertEqual(len(refinement_messages), 1)
+
+    def test_followup_table_is_refreshed_with_current_netbox_data(self):
+        answer = "\n".join(
+            (
+                "| Device | Status |",
+                "| --- | --- |",
+                "| [gv-graz-access-01](http://testserver/dcim/devices/4/) | Active |",
+                "| [gv-graz-fw-01](http://testserver/dcim/devices/3/) | Active |",
+            )
+        )
+        model = FakeModelProvider(
+            [
+                ModelResponse(content=answer),
+                ModelResponse(tool_calls=[ModelToolCall("call-1", "query_objects", {})]),
+                ModelResponse(content=answer),
+            ]
+        )
+        tools = FakeDeviceToolProvider(GRAZ_DEVICES)
+        runtime = AgentRuntime(model, tools)
+
+        result = runtime.run(
+            self.context,
+            [
+                {"role": "user", "content": "List the Graz devices."},
+                {"role": "assistant", "content": answer},
+                {"role": "user", "content": "Show their status too."},
+            ],
+        )
+
+        self.assertEqual(result.answer, answer)
+        self.assertEqual(result.tool_calls, 1)
+        self.assertEqual(tools.calls, [("query_objects", {})])
+        refresh_messages = [
+            message
+            for message in model.calls[1][0]
+            if message["role"] == "system" and message["content"].startswith("This turn has no successful")
+        ]
+        self.assertEqual(len(refresh_messages), 1)
 
     def test_accepts_ui_variant_of_returned_nested_api_link(self):
         answer = (
@@ -207,6 +378,82 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertIn("| GeoView Access Switch | GeoView Graz Edge | Network Room 201 | Active |", result.answer)
         self.assertNotIn("Device01", result.answer)
         self.assertNotIn("192.168.1.10", result.answer)
+
+    def test_fallback_ignores_discovery_only_matches_when_details_exist(self):
+        search_objects = [
+            {
+                "id": 2,
+                "display": "GeoView Graz Edge",
+                "display_url": "http://testserver/dcim/sites/2/",
+                "object_type": "dcim.site",
+            },
+            *(
+                {
+                    "id": item["id"],
+                    "display": item["display"],
+                    "display_url": item["display_url"],
+                    "object_type": "dcim.device",
+                }
+                for item in GRAZ_DEVICES
+            ),
+        ]
+        records = AgentRuntime._grounding_records(
+            "search_netbox",
+            {"ok": True, "result": {"objects": search_objects}},
+        )
+        for item in GRAZ_DEVICES:
+            records.extend(
+                AgentRuntime._grounding_records(
+                    "get_object",
+                    {
+                        "ok": True,
+                        "result": {"object_type": "dcim.device", "found": True, "object": item},
+                    },
+                )
+            )
+
+        answer = AgentRuntime._grounded_fallback(records)
+
+        self.assertIn("Verified NetBox results (2):", answer)
+        self.assertIn("| Device | Role | Site | Location | Status |", answer)
+        self.assertNotIn("[GeoView Graz Edge](/dcim/sites/2/)", answer)
+
+    def test_builds_generic_fallback_table_for_plugin_objects(self):
+        objects = [
+            {
+                "id": 1,
+                "display": "Widget A",
+                "display_url": "http://testserver/plugins/example/widgets/1/",
+                "name": "Widget A",
+                "status": {"value": "active", "label": "Active"},
+                "category": "Edge",
+                "owner": {"id": 7, "display": "Operations"},
+            },
+            {
+                "id": 2,
+                "display": "Widget B",
+                "display_url": "http://testserver/plugins/example/widgets/2/",
+                "name": "Widget B",
+                "status": {"value": "planned", "label": "Planned"},
+                "category": "Core",
+                "owner": {"id": 8, "display": "Engineering"},
+            },
+        ]
+        model = FakeModelProvider(
+            [
+                ModelResponse(tool_calls=[ModelToolCall("call-1", "query_objects", {})]),
+                ModelResponse(content="| Widget | Status |\n| --- | --- |\n| Invented | Active |"),
+            ]
+        )
+        tools = FakeDeviceToolProvider(objects, object_type="example_plugin.widget")
+        runtime = AgentRuntime(model, tools)
+
+        result = runtime.run(self.context, [{"role": "user", "content": "List widgets."}])
+
+        self.assertIn("| Widget | Status | Category | Owner |", result.answer)
+        self.assertIn("[Widget A](/plugins/example/widgets/1/)", result.answer)
+        self.assertIn("| Active | Edge | Operations |", result.answer)
+        self.assertNotIn("Invented", result.answer)
 
     def test_replaces_fabricated_value_with_grounded_fallback(self):
         answer = """| Device | Primary IPv4 |
@@ -267,14 +514,20 @@ Both devices are used in the **GeoView Test Lab** environment."""
         answer = """| Device | Status |
 | --- | --- |
 | Device01 | Active |"""
-        runtime = AgentRuntime(FakeModelProvider([ModelResponse(content=answer)]), FakeToolProvider())
+        runtime = AgentRuntime(
+            FakeModelProvider([ModelResponse(content=answer), ModelResponse(content=answer)]),
+            FakeToolProvider(),
+        )
 
         with self.assertRaises(UngroundedResponseError):
             runtime.run(self.context, [{"role": "user", "content": "List devices."}])
 
     def test_rejects_unknown_netbox_object_link(self):
         answer = "See [Device01](/dcim/devices/999/)."
-        runtime = AgentRuntime(FakeModelProvider([ModelResponse(content=answer)]), FakeToolProvider())
+        runtime = AgentRuntime(
+            FakeModelProvider([ModelResponse(content=answer), ModelResponse(content=answer)]),
+            FakeToolProvider(),
+        )
 
         with self.assertRaises(UngroundedResponseError):
             runtime.run(self.context, [{"role": "user", "content": "Show Device01."}])
@@ -295,9 +548,9 @@ Both devices are used in the **GeoView Test Lab** environment."""
         self.assertIn("Unknown tool", tool_result["error"])
         self.assertEqual(result.tool_calls, 1)
 
-    def test_enforces_five_tool_call_limit(self):
+    def test_caps_tool_call_limit_at_ten(self):
         responses = [
-            ModelResponse(tool_calls=[ModelToolCall(f"call-{index}", "read_test_data", {})]) for index in range(5)
+            ModelResponse(tool_calls=[ModelToolCall(f"call-{index}", "read_test_data", {})]) for index in range(10)
         ]
         responses.append(ModelResponse(content="Finished at the limit."))
         model = FakeModelProvider(responses)
@@ -306,8 +559,8 @@ Both devices are used in the **GeoView Test Lab** environment."""
 
         result = runtime.run(self.context, [{"role": "user", "content": "Run several reads."}])
 
-        self.assertEqual(result.tool_calls, 5)
-        self.assertEqual(len(tools.calls), 5)
+        self.assertEqual(result.tool_calls, 10)
+        self.assertEqual(len(tools.calls), 10)
         self.assertEqual(model.calls[-1][1], [])
 
     def test_rejects_tool_call_after_forced_final_request(self):
@@ -338,3 +591,22 @@ Both devices are used in the **GeoView Test Lab** environment."""
         parsed = json.loads(value)
         self.assertTrue(parsed["truncated"])
         self.assertLessEqual(len(value), 512)
+
+    def test_returns_verified_client_and_pending_actions_separately(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall("nav", "offer_navigation", {}),
+                        ModelToolCall("change", "propose_change", {}),
+                    ]
+                ),
+                ModelResponse(content="The navigation and change preview are ready."),
+            ]
+        )
+        runtime = AgentRuntime(model, FakeActionToolProvider())
+
+        result = runtime.run(self.context, [{"role": "user", "content": "Open and change the device."}])
+
+        self.assertEqual(result.client_actions[0]["url"], "/dcim/devices/4/")
+        self.assertEqual(result.pending_actions[0]["operation"], "update")

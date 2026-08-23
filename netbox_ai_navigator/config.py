@@ -8,22 +8,6 @@ PLUGIN_NAME = "netbox_ai_navigator"
 READ_PERMISSION = f"{PLUGIN_NAME}.use_read_ainavigator"
 WRITE_PERMISSION = f"{PLUGIN_NAME}.use_write_ainavigator"
 
-DEFAULT_ALLOWED_OBJECT_TYPES = (
-    "dcim.site",
-    "dcim.location",
-    "dcim.rack",
-    "dcim.device",
-    "dcim.interface",
-    "ipam.vrf",
-    "ipam.prefix",
-    "ipam.ipaddress",
-    "ipam.vlan",
-    "circuits.provider",
-    "circuits.circuit",
-    "virtualization.cluster",
-    "virtualization.virtualmachine",
-)
-
 DEFAULT_SETTINGS = {
     "enabled": True,
     "model": {
@@ -47,10 +31,23 @@ DEFAULT_SETTINGS = {
         "max_results": 50,
         "max_output_chars": 50000,
         "timeout": 30,
-        "allowed_object_types": list(DEFAULT_ALLOWED_OBJECT_TYPES),
+        "allowed_object_types": None,
+        "excluded_object_types": [],
+        "excluded_fields": [],
+        "documentation": {
+            "enabled": True,
+            "max_results": 5,
+            "max_section_chars": 12000,
+            "additional_roots": [],
+        },
+        "write": {
+            "enabled": True,
+            "approval_ttl": 600,
+            "max_pending": 5,
+        },
     },
     "agent": {
-        "max_tool_calls": 5,
+        "max_tool_calls": 10,
         "max_history_messages": 20,
         "max_message_chars": 12000,
     },
@@ -113,21 +110,33 @@ def validate_plugin_settings(configured: dict[str, Any]) -> None:
     _require_positive_number(tools, "max_results", "tools.max_results", integer=True, maximum=50)
     _require_positive_number(tools, "max_output_chars", "tools.max_output_chars", integer=True)
     _require_positive_number(tools, "timeout", "tools.timeout")
-    allowed_types = tools.get("allowed_object_types")
-    if (
-        not isinstance(allowed_types, list)
-        or not allowed_types
-        or not all(isinstance(value, str) for value in allowed_types)
-    ):
-        raise ImproperlyConfigured("netbox_ai_navigator.tools.allowed_object_types must be a non-empty array.")
-    unsupported_types = set(allowed_types) - set(DEFAULT_ALLOWED_OBJECT_TYPES)
-    if unsupported_types:
-        raise ImproperlyConfigured(
-            "Unsupported netbox_ai_navigator object types: " + ", ".join(sorted(unsupported_types))
-        )
+    _require_optional_string_list(tools, "allowed_object_types", allow_none=True)
+    _require_optional_string_list(tools, "excluded_object_types")
+    _require_optional_string_list(tools, "excluded_fields")
+    documentation = tools.get("documentation")
+    if not isinstance(documentation, dict) or not isinstance(documentation.get("enabled"), bool):
+        raise ImproperlyConfigured("netbox_ai_navigator.tools.documentation.enabled must be a boolean.")
+    _require_positive_number(documentation, "max_results", "tools.documentation.max_results", integer=True, maximum=10)
+    _require_positive_number(
+        documentation,
+        "max_section_chars",
+        "tools.documentation.max_section_chars",
+        integer=True,
+        maximum=30000,
+    )
+    _require_optional_string_list(
+        documentation,
+        "additional_roots",
+        path="tools.documentation.additional_roots",
+    )
+    write = tools.get("write")
+    if not isinstance(write, dict) or not isinstance(write.get("enabled"), bool):
+        raise ImproperlyConfigured("netbox_ai_navigator.tools.write.enabled must be a boolean.")
+    _require_positive_number(write, "approval_ttl", "tools.write.approval_ttl", integer=True, maximum=3600)
+    _require_positive_number(write, "max_pending", "tools.write.max_pending", integer=True, maximum=10)
 
     agent = config["agent"]
-    _require_positive_number(agent, "max_tool_calls", "agent.max_tool_calls", integer=True, maximum=5)
+    _require_positive_number(agent, "max_tool_calls", "agent.max_tool_calls", integer=True, maximum=10)
     _require_positive_number(agent, "max_history_messages", "agent.max_history_messages", integer=True)
     _require_positive_number(agent, "max_message_chars", "agent.max_message_chars", integer=True)
 
@@ -148,13 +157,31 @@ def _require_positive_number(
         raise ImproperlyConfigured(f"netbox_ai_navigator.{path} must be a positive {kind}{limit}.")
 
 
+def _require_optional_string_list(
+    config: dict[str, Any],
+    key: str,
+    *,
+    allow_none: bool = False,
+    path: str | None = None,
+) -> None:
+    value = config.get(key)
+    if allow_none and value is None:
+        return
+    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+        suffix = " or null" if allow_none else ""
+        setting_path = path or f"tools.{key}"
+        raise ImproperlyConfigured(f"netbox_ai_navigator.{setting_path} must be an array of non-empty strings{suffix}.")
+
+
 def _user_is_eligible(user, plugin_settings: dict[str, Any] | None = None) -> bool:
     config = plugin_settings or get_plugin_settings()
     return bool(config.get("enabled", True) and user.is_authenticated and user.is_active)
 
 
 def user_can_write_assistant(user, plugin_settings: dict[str, Any] | None = None) -> bool:
-    return _user_is_eligible(user, plugin_settings) and user.has_perm(WRITE_PERMISSION)
+    config = plugin_settings or get_plugin_settings()
+    write_enabled = config.get("tools", {}).get("write", {}).get("enabled", True)
+    return bool(write_enabled and _user_is_eligible(user, config) and user.has_perm(WRITE_PERMISSION))
 
 
 def user_can_read_assistant(user, plugin_settings: dict[str, Any] | None = None) -> bool:
