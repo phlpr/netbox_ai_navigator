@@ -99,7 +99,7 @@ class OpenAICompatibleProviderTest(SimpleTestCase):
 
 
 class MyGPTApiProviderTest(SimpleTestCase):
-    channel_id = "1f708a24-f8bc-4e5d-ba4b-942b5aae71da"
+    channel_id = "00000000-0000-4000-8000-000000000001"
     config = {
         "api_url": "https://api.myg.pt/api/v1/",
         "tenant": "test-tenant",
