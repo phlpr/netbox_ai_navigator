@@ -42,6 +42,30 @@ class FakeToolProvider(ToolProvider):
         return {"value": 42}
 
 
+class FakeWriteToolProvider(FakeToolProvider):
+    def list_tools(self, context):
+        return [
+            *super().list_tools(context),
+            ToolDefinition(
+                name="propose_update_object",
+                description="Propose one test update.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+        ]
+
+    def call_tool(self, context, name, arguments):
+        if name == "propose_update_object":
+            return {
+                "requires_confirmation": True,
+                "pending_action": {
+                    "type": "change_approval",
+                    "operation": "update",
+                    "endpoint": "/api/dcim/devices/4/",
+                },
+            }
+        return super().call_tool(context, name, arguments)
+
+
 class FakeDeviceToolProvider(ToolProvider):
     def __init__(self, objects, object_type="dcim.device"):
         self.objects = objects
@@ -229,6 +253,8 @@ class AgentRuntimeTest(SimpleTestCase):
         system_message = model.calls[0][0][0]
         self.assertEqual(system_message["role"], "system")
         self.assertIn("Formatting is part of correctness", system_message["content"])
+        self.assertIn("scope is limited to NetBox data", system_message["content"])
+        self.assertIn("Do not answer unrelated general-knowledge", system_message["content"])
         self.assertIn("GitHub-style Markdown", system_message["content"])
         self.assertIn("For two or more comparable NetBox objects", system_message["content"])
         self.assertIn("no more than five relevant columns", system_message["content"])
@@ -249,6 +275,79 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertIn("every other cell value", system_message["content"])
         self.assertIn("Do not add a concluding claim", system_message["content"])
         self.assertIn("Do not emit raw JSON", system_message["content"])
+
+    def test_replaces_out_of_scope_answer_without_tool_call(self):
+        model = FakeModelProvider(
+            [ModelResponse(content="Use list.sort() or sorted() to sort a Python list.")]
+        )
+
+        result = AgentRuntime(model, FakeToolProvider()).run(
+            self.context,
+            [{"role": "user", "content": "How do I sort a Python list?"}],
+        )
+
+        self.assertEqual(
+            result.answer,
+            "AI Navigator is limited to NetBox data, configuration, and workflows. "
+            "Please ask a NetBox-related question.",
+        )
+        self.assertEqual(result.tool_calls, 0)
+
+    def test_translates_out_of_scope_answer(self):
+        model = FakeModelProvider([ModelResponse(content="Verwende list.sort().")])
+
+        with override("de"):
+            result = AgentRuntime(model, FakeToolProvider()).run(
+                self.context,
+                [{"role": "user", "content": "Wie sortiere ich eine Python-Liste?"}],
+            )
+
+        self.assertEqual(
+            result.answer,
+            "AI Navigator ist auf NetBox-Daten, -Konfiguration und -Arbeitsabläufe beschränkt. "
+            "Bitte stellen Sie eine NetBox-bezogene Frage.",
+        )
+
+    def test_sends_explicit_session_capability_from_available_tools(self):
+        write_model = FakeModelProvider([ModelResponse(content="A write-capable answer.")])
+        AgentRuntime(write_model, FakeWriteToolProvider()).run(
+            self.context,
+            [{"role": "user", "content": "Update one object."}],
+        )
+        write_capability = write_model.calls[0][0][1]
+
+        read_model = FakeModelProvider([ModelResponse(content="A read-only answer.")])
+        AgentRuntime(read_model, FakeToolProvider()).run(
+            self.context,
+            [{"role": "user", "content": "Inspect one object."}],
+        )
+        read_capability = read_model.calls[0][0][1]
+
+        self.assertIn("WRITE PROPOSALS ENABLED", write_capability["content"])
+        self.assertIn("Never describe this session as read-only", write_capability["content"])
+        self.assertIn("READ-ONLY", read_capability["content"])
+        self.assertIn("No propose_* tools are available", read_capability["content"])
+
+    def test_pending_change_uses_deterministic_confirmation_answer(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(
+                    tool_calls=[ModelToolCall("change", "propose_update_object", {"status": "active"})]
+                ),
+                ModelResponse(content="The object was already updated."),
+            ]
+        )
+
+        result = AgentRuntime(model, FakeWriteToolProvider()).run(
+            self.context,
+            [{"role": "user", "content": "Set the status to active."}],
+        )
+
+        self.assertEqual(
+            result.answer,
+            "The requested change was validated and is awaiting manual confirmation.",
+        )
+        self.assertEqual(len(result.pending_actions), 1)
 
     def test_accepts_table_grounded_in_query_result(self):
         answer = "\n".join(

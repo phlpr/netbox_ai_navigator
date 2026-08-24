@@ -105,7 +105,7 @@ class LocalCurrentUserProvider(ToolProvider):
             ToolDefinition(
                 name="list_object_types",
                 description=(
-                    "Discover the core and plugin NetBox object types available to the read-only assistant. "
+                    "Discover the core and plugin NetBox object types available to the current-user assistant. "
                     "Use query to narrow the result by model label or translated name."
                 ),
                 input_schema={
@@ -874,6 +874,10 @@ class LocalCurrentUserProvider(ToolProvider):
         if isinstance(value, list):
             return [cls._preview_value(item) for item in value[:20]]
         if isinstance(value, dict):
+            if "label" in value and "value" in value:
+                return cls._preview_value(value["label"])
+            if "display" in value and ("id" in value or "url" in value):
+                return cls._preview_value(value["display"])
             return {str(key)[:100]: cls._preview_value(item) for key, item in list(value.items())[:20]}
         return str(value)[:500]
 

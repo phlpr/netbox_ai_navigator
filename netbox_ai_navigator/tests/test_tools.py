@@ -23,6 +23,12 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
         self.assertEqual(self.provider.allowed_object_types, ("dcim.device", "users.user"))
         self.assertEqual(self.provider.max_results, 50)
 
+    def test_preview_value_uses_choice_label(self):
+        self.assertEqual(
+            self.provider._preview_value({"value": "planned", "label": "Planned"}),
+            "Planned",
+        )
+
     def test_discovers_compatible_core_models_and_blocks_credential_models(self):
         provider = LocalCurrentUserProvider({})
 

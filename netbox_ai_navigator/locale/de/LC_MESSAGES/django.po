@@ -87,6 +87,12 @@ msgstr "{label} öffnen"
 msgid "This change requires your confirmation."
 msgstr "Diese Änderung erfordert Ihre Bestätigung."
 
+msgid "The requested change was validated and is awaiting manual confirmation."
+msgstr "Die angeforderte Änderung wurde validiert und wartet auf manuelle Bestätigung."
+
+msgid "AI Navigator is limited to NetBox data, configuration, and workflows. Please ask a NetBox-related question."
+msgstr "AI Navigator ist auf NetBox-Daten, -Konfiguration und -Arbeitsabläufe beschränkt. Bitte stellen Sie eine NetBox-bezogene Frage."
+
 msgid "Field"
 msgstr "Feld"
 

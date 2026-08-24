@@ -145,6 +145,10 @@ class AgentRuntime:
         page_context: dict[str, Any] | None = None,
     ) -> AgentResult:
         normalized_history = self._normalize_history(history)
+        model_tools = [definition.as_model_tool() for definition in self.tool_provider.list_tools(context)]
+        write_proposals_available = any(
+            str(tool.get("function", {}).get("name", "")).startswith("propose_") for tool in model_tools
+        )
         messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         if page_context:
             messages.append(
@@ -156,13 +160,37 @@ class AgentRuntime:
                     ),
                 }
             )
+        if write_proposals_available:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Session capability for this request: WRITE PROPOSALS ENABLED. The current user has the "
+                        "Navigator write capability and the listed propose_* tools are available. Never describe "
+                        "this session as read-only or claim that the user lacks write access. For an explicit, "
+                        "unambiguous change to exactly one object, call describe_object_type and then the matching "
+                        "proposal tool without asking for separate preliminary confirmation. Manual confirmation "
+                        "happens in the browser only after the proposal tool returns a validated preview."
+                    ),
+                }
+            )
+        else:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Session capability for this request: READ-ONLY. No propose_* tools are available. Do not "
+                        "offer or imply that a change preview can be staged in this session."
+                    ),
+                }
+            )
         messages.extend(normalized_history)
 
-        model_tools = [definition.as_model_tool() for definition in self.tool_provider.list_tools(context)]
         response = self.model_provider.complete(messages, model_tools)
         tool_call_count = 0
         forced_final = False
         data_tool_attempted = False
+        successful_tool_calls: set[str] = set()
         successful_data_tools: set[str] = set()
         grounding_records: list[GroundingRecord] = []
         client_actions: list[dict[str, Any]] = []
@@ -200,6 +228,8 @@ class AgentRuntime:
                                 and len(client_actions) < 3
                             ):
                                 client_actions.append(action)
+                        if result.get("ok"):
+                            successful_tool_calls.add(tool_call.name)
                     if tool_call.name in DATA_TOOL_NAMES:
                         data_tool_attempted = True
                         new_records = self._grounding_records(tool_call.name, result)
@@ -289,9 +319,16 @@ class AgentRuntime:
             response = self.model_provider.complete(messages, model_tools)
 
         answer = response.content or ""
-        if not answer:
+        if pending_actions:
+            answer = _("The requested change was validated and is awaiting manual confirmation.")
+        elif not answer:
             raise InvalidRequestError("The model did not return a final answer.")
-        if force_grounded_fallback:
+        elif not successful_tool_calls and not self._answer_references_netbox_data(answer):
+            answer = _(
+                "AI Navigator is limited to NetBox data, configuration, and workflows. "
+                "Please ask a NetBox-related question."
+            )
+        elif force_grounded_fallback:
             logger.info(
                 "Returning deterministic fallback after automatic search hydration",
                 extra={"grounding_records": len(grounding_records)},
