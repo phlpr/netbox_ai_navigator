@@ -4,6 +4,8 @@ from typing import Any
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
+from .provider_http import normalize_provider_url
+
 PLUGIN_NAME = "netbox_ai_navigator"
 READ_PERMISSION = f"{PLUGIN_NAME}.use_read_ainavigator"
 WRITE_PERMISSION = f"{PLUGIN_NAME}.use_write_ainavigator"
@@ -15,6 +17,7 @@ DEFAULT_SETTINGS = {
         "base_url": "http://localhost:11434/v1",
         "api_url": "https://api.myg.pt/api/v1/",
         "api_key": None,
+        "allow_insecure_http": False,
         "model": "qwen3",
         "tenant": None,
         "service_user": None,
@@ -25,6 +28,7 @@ DEFAULT_SETTINGS = {
         "temperature": 0.1,
         "max_tokens": 1200,
         "max_response_chars": 20000,
+        "max_http_response_bytes": 2_000_000,
     },
     "tools": {
         "provider": "local_current_user",
@@ -34,6 +38,7 @@ DEFAULT_SETTINGS = {
         "allowed_object_types": None,
         "excluded_object_types": [],
         "excluded_fields": [],
+        "include_custom_fields": False,
         "documentation": {
             "enabled": True,
             "max_results": 5,
@@ -50,6 +55,7 @@ DEFAULT_SETTINGS = {
         "max_tool_calls": 10,
         "max_history_messages": 20,
         "max_message_chars": 12000,
+        "requests_per_minute": 20,
     },
 }
 
@@ -82,6 +88,10 @@ def validate_plugin_settings(configured: dict[str, Any]) -> None:
         not isinstance(model.get("base_url"), str) or not model["base_url"].strip()
     ):
         raise ImproperlyConfigured("netbox_ai_navigator.model.base_url must be configured.")
+    if not isinstance(model.get("allow_insecure_http"), bool):
+        raise ImproperlyConfigured("netbox_ai_navigator.model.allow_insecure_http must be a boolean.")
+    provider_url_key = "base_url" if model_provider == "openai_compatible" else "api_url"
+    _validate_provider_url(model.get(provider_url_key), provider_url_key, model["allow_insecure_http"])
     if model_provider == "mygpt_api":
         for key in ("api_url", "tenant", "channel_id"):
             if not isinstance(model.get(key), str) or not model[key].strip():
@@ -98,6 +108,13 @@ def validate_plugin_settings(configured: dict[str, Any]) -> None:
     _require_positive_number(model, "timeout", "model.timeout")
     _require_positive_number(model, "max_tokens", "model.max_tokens", integer=True)
     _require_positive_number(model, "max_response_chars", "model.max_response_chars", integer=True)
+    _require_positive_number(
+        model,
+        "max_http_response_bytes",
+        "model.max_http_response_bytes",
+        integer=True,
+        maximum=10_000_000,
+    )
     temperature = model.get("temperature")
     if temperature is not None and (
         isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or not 0 <= temperature <= 2
@@ -113,6 +130,8 @@ def validate_plugin_settings(configured: dict[str, Any]) -> None:
     _require_optional_string_list(tools, "allowed_object_types", allow_none=True)
     _require_optional_string_list(tools, "excluded_object_types")
     _require_optional_string_list(tools, "excluded_fields")
+    if not isinstance(tools.get("include_custom_fields"), bool):
+        raise ImproperlyConfigured("netbox_ai_navigator.tools.include_custom_fields must be a boolean.")
     documentation = tools.get("documentation")
     if not isinstance(documentation, dict) or not isinstance(documentation.get("enabled"), bool):
         raise ImproperlyConfigured("netbox_ai_navigator.tools.documentation.enabled must be a boolean.")
@@ -139,6 +158,20 @@ def validate_plugin_settings(configured: dict[str, Any]) -> None:
     _require_positive_number(agent, "max_tool_calls", "agent.max_tool_calls", integer=True, maximum=10)
     _require_positive_number(agent, "max_history_messages", "agent.max_history_messages", integer=True)
     _require_positive_number(agent, "max_message_chars", "agent.max_message_chars", integer=True)
+    _require_positive_number(
+        agent,
+        "requests_per_minute",
+        "agent.requests_per_minute",
+        integer=True,
+        maximum=600,
+    )
+
+
+def _validate_provider_url(value: Any, key: str, allow_insecure_http: bool) -> None:
+    try:
+        normalize_provider_url(value, allow_insecure_http=allow_insecure_http)
+    except ValueError as exc:
+        raise ImproperlyConfigured(f"netbox_ai_navigator.model.{key} is invalid: {exc}") from exc
 
 
 def _require_positive_number(

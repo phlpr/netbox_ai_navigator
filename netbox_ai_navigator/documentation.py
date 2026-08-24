@@ -157,12 +157,15 @@ def _build_sections(root_specs: tuple[tuple[str, str, str | None], ...]) -> tupl
     sections: list[DocumentationSection] = []
     seen_files: set[Path] = set()
     for source, root_value, url_kind in root_specs:
-        root = Path(root_value)
-        files = [root] if root.is_file() else sorted(root.rglob("*.md"))
+        root = Path(root_value).resolve()
+        root_is_file = root.is_file()
+        files = [root] if root_is_file else sorted(root.rglob("*.md"))
         if not files and root.is_dir():
             files = sorted(root.rglob("*.html"))
         for path in files:
             resolved = path.resolve()
+            if not root_is_file and not resolved.is_relative_to(root):
+                continue
             if resolved in seen_files or not path.is_file() or len(seen_files) >= MAX_DOCUMENT_FILES:
                 continue
             seen_files.add(resolved)

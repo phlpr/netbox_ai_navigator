@@ -78,12 +78,15 @@ PLUGINS_CONFIG = {
         "model": {
             "provider": "openai_compatible",
             "base_url": "http://ollama:11434/v1",
+            # Required only for a trusted non-loopback HTTP endpoint such as this container hostname.
+            "allow_insecure_http": True,
             "api_key": os.getenv("NETBOX_AI_NAVIGATOR_API_KEY"),
             "model": "qwen3",
             "timeout": 60,
             "temperature": 0.1,
             "max_tokens": 1200,
             "max_response_chars": 20000,
+            "max_http_response_bytes": 2000000,
         },
         "tools": {
             "provider": "local_current_user",
@@ -96,6 +99,8 @@ PLUGINS_CONFIG = {
             # Optional additional deployment-specific restrictions.
             "excluded_object_types": [],
             "excluded_fields": [],
+            # Opt in only when custom-field values may be disclosed to the model provider.
+            "include_custom_fields": False,
             "documentation": {
                 "enabled": True,
                 "max_results": 5,
@@ -112,6 +117,7 @@ PLUGINS_CONFIG = {
             "max_tool_calls": 10,
             "max_history_messages": 20,
             "max_message_chars": 12000,
+            "requests_per_minute": 20,
         },
     }
 }
@@ -152,9 +158,15 @@ Set it to a list of `app_label.model_name` values to use an administrator allowl
 and `excluded_fields` can narrow either mode further. Built-in credential exclusions cannot be overridden through
 configuration.
 
+Custom fields are excluded by default because their schema and content are deployment-specific. Set
+`tools.include_custom_fields=True` to expose them to read queries, custom-field filters, and validated write proposals.
+The non-configurable credential-name guards still apply recursively inside `custom_fields`; entries whose names contain
+terms such as `password`, `token`, or `secret` remain unavailable even when the opt-in is enabled.
+
 Documentation search indexes `DOCS_ROOT`, documentation or README files shipped by installed plugins, and any paths
 explicitly listed in `documentation.additional_roots`. Only local files are read; documentation search performs no
-internet requests.
+internet requests. Index only additional paths whose content may be disclosed to the configured model provider; never
+point this setting at deployment configuration, credential stores, or private keys.
 
 For object lookup, RBAC restriction is applied before the primary-key filter. An unauthorized object therefore looks
 identical to a nonexistent object. The browser never receives the configured provider credentials, and neither the
@@ -164,6 +176,12 @@ Request prompts, tool results, and model answers are not logged by the plugin. T
 duration, model name, tool count, and status is logged. Chat history is stored under a random, NetBox-session-specific
 browser key so it survives page navigation and reloads. Resetting the conversation or starting a new login clears the
 visible history.
+
+Remote provider URLs require HTTPS. Loopback HTTP endpoints are accepted for local runtimes; other HTTP endpoints need
+the explicit `model.allow_insecure_http=True` opt-in. Provider redirects are not followed, response bodies are bounded,
+and chat requests are limited per authenticated user through NetBox's configured Django cache. Nested serializer data
+is filtered recursively for credential-bearing field names before it reaches the model. Documentation indexing does not
+follow symlinks outside an indexed directory.
 
 Navigator access is assigned through **Admin → Object Permissions** using the `AI Navigator` object type and one of
 the registered custom actions:

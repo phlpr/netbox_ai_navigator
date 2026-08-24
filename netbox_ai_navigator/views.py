@@ -1,8 +1,10 @@
+import hashlib
 import json
 import logging
 import time
 from typing import Any
 
+from django.core.cache import cache
 from django.http import JsonResponse
 from django.urls import resolve
 from django.utils.decorators import method_decorator
@@ -49,6 +51,9 @@ class ChatView(View):
 
         if not user_can_read_assistant(request.user, plugin_settings):
             return self._json_error("The assistant is not available for this user.", status=403)
+        rate_limit_response = self._rate_limit_response(request, plugin_settings)
+        if rate_limit_response is not None:
+            return rate_limit_response
         if request.content_type != "application/json":
             return self._json_error("Content-Type must be application/json.", status=415)
 
@@ -178,6 +183,32 @@ class ChatView(View):
         response = JsonResponse({"error": message}, status=status)
         response["Cache-Control"] = "no-store"
         response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @classmethod
+    def _rate_limit_response(cls, request, plugin_settings: dict[str, Any]) -> JsonResponse | None:
+        limit = int(plugin_settings["agent"].get("requests_per_minute", 20))
+        now = int(time.time())
+        retry_after = 60 - (now % 60)
+        identity = getattr(request.user, "pk", None) or request.user.get_username()
+        identity_hash = hashlib.sha256(str(identity).encode()).hexdigest()[:24]
+        cache_key = f"netbox_ai_navigator:chat_rate:{identity_hash}:{now // 60}"
+        try:
+            if cache.add(cache_key, 1, timeout=retry_after + 1):
+                count = 1
+            else:
+                try:
+                    count = cache.incr(cache_key)
+                except ValueError:
+                    cache.set(cache_key, 1, timeout=retry_after + 1)
+                    count = 1
+        except Exception:
+            logger.exception("Unable to apply the assistant request rate limit")
+            return None
+        if count <= limit:
+            return None
+        response = cls._json_error("Too many assistant requests. Please retry shortly.", status=429)
+        response["Retry-After"] = str(retry_after)
         return response
 
 

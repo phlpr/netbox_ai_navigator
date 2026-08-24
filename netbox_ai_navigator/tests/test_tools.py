@@ -51,6 +51,66 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
         self.assertNotIn("email", description["output_fields"])
         self.assertNotIn("password", description["output_fields"])
 
+    def test_nested_credential_fields_are_removed_from_serialized_data(self):
+        value = {
+            "name": "edge-router",
+            "custom_fields": {
+                "owner": "network-team",
+                "router password": "must-not-leave-netbox",
+                "nested": [{"api-token": "must-not-leave-netbox", "label": "safe"}],
+            },
+        }
+
+        sanitized = self.provider._sanitize_serialized_value(value)
+
+        self.assertEqual(sanitized["custom_fields"]["owner"], "network-team")
+        self.assertNotIn("router password", sanitized["custom_fields"])
+        self.assertNotIn("api-token", sanitized["custom_fields"]["nested"][0])
+        self.assertEqual(sanitized["custom_fields"]["nested"][0]["label"], "safe")
+
+    def test_nested_credential_fields_are_rejected_for_writes(self):
+        self.assertTrue(
+            self.provider._contains_blocked_nested_name(
+                {"custom_fields": {"client_secret": "must-not-be-written"}}
+            )
+        )
+        self.assertFalse(self.provider._contains_blocked_nested_name({"custom_fields": {"owner": "network-team"}}))
+
+    def test_custom_fields_are_available_only_with_explicit_opt_in(self):
+        field = SimpleNamespace(write_only=False, read_only=False, source="custom_fields")
+        enabled = LocalCurrentUserProvider({"include_custom_fields": True})
+
+        self.assertFalse(self.provider._field_is_allowed("custom_fields", field))
+        self.assertFalse(self.provider._field_is_allowed("cf_owner"))
+        self.assertTrue(enabled._field_is_allowed("custom_fields", field))
+        self.assertTrue(enabled._field_is_allowed("cf_owner"))
+        self.assertFalse(enabled._field_is_allowed("cf_service_password"))
+        self.assertTrue(enabled._write_field_is_allowed("custom_fields", field))
+
+    def test_custom_field_write_preview_keeps_safe_values_and_removes_credentials(self):
+        readable = SimpleNamespace(write_only=False, read_only=False, source="custom_fields")
+
+        class PreviewSerializer:
+            def __init__(self, *args, **kwargs):
+                self.fields = {"custom_fields": readable}
+                self.data = {
+                    "custom_fields": {
+                        "owner": "network-team",
+                        "service_token": "must-not-leave-netbox",
+                    }
+                }
+
+        enabled = LocalCurrentUserProvider({"include_custom_fields": True})
+
+        preview = enabled._serialize_preview(
+            object(),
+            PreviewSerializer,
+            self.context,
+            {"custom_fields": {"owner": "network-team"}},
+        )
+
+        self.assertEqual(preview, {"custom_fields": {"owner": "network-team"}})
+
     def test_discovers_plugin_model_from_standard_netbox_registries(self):
         readable = SimpleNamespace(write_only=False, source="name")
         write_only = SimpleNamespace(write_only=True, source="password")
@@ -65,12 +125,14 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
                     "password": write_only,
                 }
 
-        plugin_filterset = SimpleNamespace(
-            base_filters={
+        class PluginFilterSet:
+            base_filters = {
                 "q": SimpleNamespace(label="Search"),
                 "secret": SimpleNamespace(label="Secret"),
             }
-        )
+
+            def __init__(self, *args, **kwargs):
+                self.filters = self.base_filters
         plugin_model = SimpleNamespace(
             _meta=SimpleNamespace(
                 label_lower="example_plugin.widget",
@@ -99,8 +161,8 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
                 "netbox_ai_navigator.tool_providers.local_current_user.registry",
                 {
                     "filtersets": {
-                        "example_plugin.widget": plugin_filterset,
-                        "example_plugin.apitoken": plugin_filterset,
+                        "example_plugin.widget": PluginFilterSet,
+                        "example_plugin.apitoken": PluginFilterSet,
                     }
                 },
             ),

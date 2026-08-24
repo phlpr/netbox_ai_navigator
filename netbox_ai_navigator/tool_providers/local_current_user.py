@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -10,6 +11,7 @@ from django.db import DatabaseError, connection, transaction
 from django.http import QueryDict
 from django.urls import NoReverseMatch, resolve, reverse
 from django.utils.translation import gettext as _
+from netbox.api.exceptions import SerializerNotFound
 from netbox.registry import registry
 from netbox.search.backends import search_backend
 from utilities.api import get_serializer_for_model
@@ -37,11 +39,18 @@ NEVER_ALLOWED_NAME_FRAGMENTS = (
     "api_key",
     "apikey",
     "auth_key",
+    "access_key",
+    "community",
     "credential",
+    "encryption_key",
+    "passphrase",
     "password",
     "preshared_key",
     "private_key",
     "secret",
+    "session_key",
+    "shared_key",
+    "ssh_key",
     "token",
 )
 NEVER_ALLOWED_FIELDS = frozenset(
@@ -49,6 +58,8 @@ NEVER_ALLOWED_FIELDS = frozenset(
         "additional_headers",
         "auth_key",
         "body_template",
+        "config_context",
+        "config_data",
         "data",
         "key",
         "local_context_data",
@@ -86,6 +97,7 @@ class LocalCurrentUserProvider(ToolProvider):
         self.excluded_fields = NEVER_ALLOWED_FIELDS | frozenset(
             self._normalize_config_values(config.get("excluded_fields") or [])
         )
+        self.include_custom_fields = config.get("include_custom_fields", False) is True
         self.max_results = max(1, min(int(config.get("max_results", 50)), 50))
         self.timeout = max(0.1, float(config.get("timeout", 30)))
         documentation_config = config.get("documentation") or {}
@@ -364,7 +376,7 @@ class LocalCurrentUserProvider(ToolProvider):
             "propose_update_object",
             "propose_delete_object",
         }
-        if name not in database_tools:
+        if name not in database_tools and not (name == "describe_object_type" and self.include_custom_fields):
             return handler(context, arguments)
         try:
             with transaction.atomic():
@@ -402,13 +414,17 @@ class LocalCurrentUserProvider(ToolProvider):
         label = self._normalize_label(arguments["object_type"])
         model, filterset_class, serializer_class = self._resolve(label, context)
         output_fields = self._supported_output_fields(serializer_class, context)
+        available_filters = filterset_class.base_filters
+        if self.include_custom_fields:
+            filterset = filterset_class(queryset=self._restricted_queryset(model, context), request=context.request)
+            available_filters = filterset.filters
         filters = [
             {
                 "name": name,
                 "label": str(filter_.label or name),
                 "type": filter_.__class__.__name__,
             }
-            for name, filter_ in filterset_class.base_filters.items()
+            for name, filter_ in available_filters.items()
             if self._field_is_allowed(name)
         ]
         return {
@@ -432,13 +448,13 @@ class LocalCurrentUserProvider(ToolProvider):
         filters = arguments.get("filters") or {}
         if not isinstance(filters, dict):
             raise ToolValidationError("filters must be a JSON object.")
-        supported_filters = {name for name in filterset_class.base_filters if self._field_is_allowed(name)}
+        query_data = self._to_query_dict(filters)
+        filterset = filterset_class(data=query_data, queryset=queryset, request=context.request)
+        supported_filters = {name for name in filterset.filters if self._field_is_allowed(name)}
         unknown_filters = set(filters) - supported_filters
         if unknown_filters:
             raise ToolValidationError(f"Unsupported filters: {', '.join(sorted(unknown_filters))}")
 
-        query_data = self._to_query_dict(filters)
-        filterset = filterset_class(data=query_data, queryset=queryset, request=context.request)
         if not filterset.is_valid():
             raise ToolValidationError(f"Invalid filters: {filterset.errors.get_json_data(escape_html=True)}")
         try:
@@ -465,7 +481,7 @@ class LocalCurrentUserProvider(ToolProvider):
             "object_type": label,
             "returned": len(objects),
             "limit": limit,
-            "objects": list(serialized),
+            "objects": [self._sanitize_serialized_value(item) for item in serialized],
         }
 
     def _get_object(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -484,7 +500,7 @@ class LocalCurrentUserProvider(ToolProvider):
             return {"object_type": label, "found": False, "object": None}
 
         serialized = serializer_class(instance, fields=fields, context={"request": context.request}).data
-        return {"object_type": label, "found": True, "object": dict(serialized)}
+        return {"object_type": label, "found": True, "object": self._sanitize_serialized_value(dict(serialized))}
 
     def _search_netbox(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
         self._require_arguments(arguments, {"query"}, {"query", "limit"})
@@ -709,7 +725,7 @@ class LocalCurrentUserProvider(ToolProvider):
                 continue
             try:
                 serializer_class = get_serializer_for_model(model)
-            except Exception:
+            except SerializerNotFound:
                 continue
             capabilities[label] = ObjectTypeCapability(model, filterset_class, serializer_class)
         return dict(sorted(capabilities.items()))
@@ -757,6 +773,8 @@ class LocalCurrentUserProvider(ToolProvider):
             raise ToolValidationError("data must contain only JSON values.") from exc
         if serialized_size > MAX_WRITE_PAYLOAD_CHARS:
             raise ToolValidationError(f"data exceeds the {MAX_WRITE_PAYLOAD_CHARS}-character limit.")
+        if self._contains_blocked_nested_name(data):
+            raise ToolValidationError("data contains a blocked credential-bearing or excessively nested field.")
 
         supported = {field["name"] for field in self._supported_write_fields(serializer_class, context)}
         unsupported = set(data) - supported
@@ -783,13 +801,20 @@ class LocalCurrentUserProvider(ToolProvider):
         readable = set(self._supported_output_fields(serializer_class, context))
         fields = [*IDENTITY_FIELDS, *(field for field in data if field in readable)]
         fields = list(dict.fromkeys(field for field in fields if field in readable))
-        return dict(serializer_class(instance, fields=fields, context={"request": context.request}).data)
+        serialized = dict(serializer_class(instance, fields=fields, context={"request": context.request}).data)
+        return self._sanitize_serialized_value(serialized)
 
     def _write_field_is_allowed(self, name: str, serializer_field: Any) -> bool:
         normalized = name.casefold()
         source = getattr(serializer_field, "source", None)
-        return not self._name_is_blocked(normalized) and (
-            not isinstance(source, str) or not self._name_is_blocked(source.casefold().split(".", 1)[0])
+        normalized_source = source.casefold().split(".", 1)[0] if isinstance(source, str) else None
+        is_custom_field = self._is_custom_field_reference(normalized) or (
+            normalized_source is not None and self._is_custom_field_reference(normalized_source)
+        )
+        return (
+            (self.include_custom_fields or not is_custom_field)
+            and not self._name_is_blocked(normalized)
+            and (normalized_source is None or not self._name_is_blocked(normalized_source))
         )
 
     @staticmethod
@@ -905,6 +930,10 @@ class LocalCurrentUserProvider(ToolProvider):
     def _field_is_allowed(self, name: str, serializer_field: Any | None = None) -> bool:
         normalized = name.casefold()
         base_name = normalized.split("__", 1)[0]
+        if not self.include_custom_fields and (
+            self._is_custom_field_reference(normalized) or self._is_custom_field_reference(base_name)
+        ):
+            return False
         if self._name_is_blocked(normalized) or self._name_is_blocked(base_name):
             return False
         if serializer_field is None:
@@ -916,10 +945,49 @@ class LocalCurrentUserProvider(ToolProvider):
             return True
         normalized_source = source.casefold()
         source_root = normalized_source.split(".", 1)[0]
+        if not self.include_custom_fields and (
+            self._is_custom_field_reference(normalized_source) or self._is_custom_field_reference(source_root)
+        ):
+            return False
         return not self._name_is_blocked(normalized_source) and not self._name_is_blocked(source_root)
 
+    @staticmethod
+    def _is_custom_field_reference(value: str) -> bool:
+        normalized = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+        return normalized in {"custom_fields", "custom_field_data"} or normalized.startswith("cf_")
+
     def _name_is_blocked(self, value: str) -> bool:
-        return value in self.excluded_fields or any(term in value for term in NEVER_ALLOWED_NAME_FRAGMENTS)
+        raw = value.casefold()
+        normalized = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
+        return raw in self.excluded_fields or normalized in self.excluded_fields or any(
+            term in normalized for term in NEVER_ALLOWED_NAME_FRAGMENTS
+        )
+
+    def _sanitize_serialized_value(self, value: Any, *, depth: int = 0) -> Any:
+        if depth >= 10:
+            return None
+        if isinstance(value, dict):
+            return {
+                key: self._sanitize_serialized_value(item, depth=depth + 1)
+                for key, item in value.items()
+                if not self._name_is_blocked(str(key))
+            }
+        if isinstance(value, list):
+            return [self._sanitize_serialized_value(item, depth=depth + 1) for item in value]
+        return value
+
+    def _contains_blocked_nested_name(self, value: Any, *, depth: int = 0) -> bool:
+        if depth >= 10:
+            return True
+        if isinstance(value, dict):
+            return any(
+                self._name_is_blocked(str(key))
+                or self._contains_blocked_nested_name(item, depth=depth + 1)
+                for key, item in value.items()
+            )
+        if isinstance(value, list):
+            return any(self._contains_blocked_nested_name(item, depth=depth + 1) for item in value)
+        return False
 
     @staticmethod
     def _normalize_config_values(values: Iterable[Any]) -> tuple[str, ...]:

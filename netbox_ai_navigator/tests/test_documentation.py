@@ -48,3 +48,17 @@ Plugin settings are defined in `PLUGINS_CONFIG`.
             index = DocumentationIndex()
 
         self.assertIsNone(index.read("../../configuration.py"))
+
+    def test_does_not_follow_document_symlink_outside_indexed_root(self):
+        base = Path(self.temp_directory.name)
+        docs_root = base / "safe-docs"
+        docs_root.mkdir()
+        outside = base / "outside.md"
+        outside.write_text("# Private\n\nDO_NOT_INDEX_THIS_VALUE", encoding="utf-8")
+        (docs_root / "linked.md").symlink_to(outside)
+        _build_sections.cache_clear()
+
+        with override_settings(DOCS_ROOT=str(docs_root)):
+            index = DocumentationIndex()
+
+        self.assertEqual(index.search("DO_NOT_INDEX_THIS_VALUE"), [])

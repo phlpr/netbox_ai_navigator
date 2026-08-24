@@ -3,6 +3,12 @@ from typing import Any
 import requests
 
 from netbox_ai_navigator.exceptions import ProviderError, ProviderTimeoutError
+from netbox_ai_navigator.provider_http import (
+    ProviderResponseTooLargeError,
+    close_response,
+    normalize_provider_url,
+    read_bounded_json,
+)
 
 from .base import ModelProvider, ModelResponse, ModelToolCall
 
@@ -11,16 +17,21 @@ class OpenAICompatibleProvider(ModelProvider):
     """OpenAI Chat Completions compatible model provider with tool-call support."""
 
     def __init__(self, config: dict[str, Any], session=None):
-        self.base_url = str(config.get("base_url", "")).rstrip("/")
+        try:
+            self.base_url = normalize_provider_url(
+                config.get("base_url"),
+                allow_insecure_http=config.get("allow_insecure_http", False) is True,
+            )
+        except ValueError as exc:
+            raise ProviderError(f"The model base URL is invalid: {exc}") from exc
         self.api_key = config.get("api_key")
         self.model_name = str(config.get("model", ""))
         self.timeout = float(config.get("timeout", 60))
         self.temperature = config.get("temperature", 0.1)
         self.max_tokens = config.get("max_tokens", 1200)
+        self.max_http_response_bytes = max(1, min(int(config.get("max_http_response_bytes", 2_000_000)), 10_000_000))
         self.session = session or requests
 
-        if not self.base_url:
-            raise ProviderError("The model base URL is not configured.")
         if not self.model_name:
             raise ProviderError("The model name is not configured.")
 
@@ -47,6 +58,8 @@ class OpenAICompatibleProvider(ModelProvider):
                 headers=headers,
                 json=payload,
                 timeout=self.timeout,
+                allow_redirects=False,
+                stream=True,
             )
         except requests.Timeout as exc:
             raise ProviderTimeoutError("The model provider timed out.") from exc
@@ -54,13 +67,18 @@ class OpenAICompatibleProvider(ModelProvider):
             raise ProviderError("The model provider could not be reached.") from exc
 
         if not 200 <= response.status_code < 300:
+            close_response(response)
             raise ProviderError(f"The model provider returned HTTP {response.status_code}.")
 
         try:
-            data = response.json()
+            data = read_bounded_json(response, max_bytes=self.max_http_response_bytes)
             message = data["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
+        except ProviderResponseTooLargeError as exc:
+            raise ProviderError("The model provider returned an oversized response.") from exc
+        except (KeyError, IndexError, TypeError, UnicodeDecodeError, ValueError) as exc:
             raise ProviderError("The model provider returned an invalid response.") from exc
+        finally:
+            close_response(response)
 
         tool_calls = []
         for raw_call in message.get("tool_calls") or []:

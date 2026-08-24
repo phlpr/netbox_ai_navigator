@@ -148,6 +148,8 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -155,6 +157,16 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Deployment credentials and local NetBox configuration
+configuration.py
+secrets.json
+secrets.yaml
+secrets.yml
+*.key
+*.pem
+*.p12
+*.pfx
 
 # Spyder project settings
 .spyderproject

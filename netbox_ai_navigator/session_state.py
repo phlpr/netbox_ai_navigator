@@ -4,7 +4,8 @@ import uuid
 from typing import Any
 
 MYGPT_CONVERSATION_SESSION_KEY = "netbox_ai_navigator_mygpt_conversation_id"
-BROWSER_STORAGE_TOKEN_SESSION_KEY = "netbox_ai_navigator_browser_storage_token"
+# This is a session dictionary key, not a hardcoded authentication token.
+BROWSER_STORAGE_TOKEN_SESSION_KEY = "netbox_ai_navigator_browser_storage_token"  # nosec B105
 PENDING_ACTIONS_SESSION_KEY = "netbox_ai_navigator_pending_actions"
 
 

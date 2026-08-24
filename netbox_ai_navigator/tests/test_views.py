@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from netbox_ai_navigator.agent import AgentResult
@@ -182,6 +183,34 @@ class ChatViewTest(SimpleTestCase):
         self.assertNotIn("endpoint", payload["pending_actions"][0])
         self.assertNotIn("payload", payload["pending_actions"][0])
         self.assertNotIn("/api/dcim/sites/1/", response.content.decode())
+
+    @override_settings(
+        CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "navigator-rate"}},
+        PLUGINS_CONFIG={
+            "netbox_ai_navigator": {
+                "enabled": True,
+                "model": {"model": "test-model"},
+                "agent": {"requests_per_minute": 2},
+            }
+        },
+    )
+    @patch("netbox_ai_navigator.views.build_agent_runtime", return_value=FakeRuntime())
+    def test_rate_limits_chat_requests_per_authenticated_user(self, build_runtime):
+        cache.clear()
+        responses = []
+        for _index in range(3):
+            request = self.factory.post(
+                "/plugins/ai-navigator/api/chat/",
+                data=json.dumps({"messages": [{"role": "user", "content": "Show the device"}]}),
+                content_type="application/json",
+            )
+            request.user = FakeUser()
+            responses.append(ChatView.as_view()(request))
+
+        self.assertEqual([response.status_code for response in responses], [200, 200, 429])
+        self.assertIn("Retry-After", responses[-1])
+        self.assertEqual(build_runtime.call_count, 2)
+        cache.clear()
 
 
 @override_settings(

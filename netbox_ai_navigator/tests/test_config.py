@@ -26,3 +26,30 @@ class DynamicToolConfigurationTest(SimpleTestCase):
     def test_exclusions_reject_empty_values(self):
         with self.assertRaises(ImproperlyConfigured):
             validate_plugin_settings({"tools": {"excluded_fields": [""]}})
+
+    def test_custom_fields_require_a_boolean_opt_in(self):
+        validate_plugin_settings({"tools": {"include_custom_fields": True}})
+        with self.assertRaises(ImproperlyConfigured):
+            validate_plugin_settings({"tools": {"include_custom_fields": "yes"}})
+
+    def test_remote_provider_requires_https_by_default(self):
+        with self.assertRaisesMessage(ImproperlyConfigured, "Plain HTTP"):
+            validate_plugin_settings({"model": {"base_url": "http://model.internal/v1"}})
+
+    def test_trusted_internal_http_provider_requires_explicit_opt_in(self):
+        validate_plugin_settings(
+            {
+                "model": {
+                    "base_url": "http://model.internal/v1",
+                    "allow_insecure_http": True,
+                }
+            }
+        )
+
+    def test_provider_url_rejects_embedded_credentials(self):
+        with self.assertRaisesMessage(ImproperlyConfigured, "embedded credentials"):
+            validate_plugin_settings({"model": {"base_url": "https://user:password@model.example/v1"}})
+
+    def test_rate_limit_is_bounded(self):
+        with self.assertRaises(ImproperlyConfigured):
+            validate_plugin_settings({"agent": {"requests_per_minute": 601}})

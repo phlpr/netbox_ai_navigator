@@ -8,13 +8,18 @@ from netbox_ai_navigator.model_providers import MyGPTApiProvider, OpenAICompatib
 
 
 class FakeResponse:
-    def __init__(self, data=None, status_code=200):
+    def __init__(self, data=None, status_code=200, *, content=None, headers=None):
         self.data = data
         self.status_code = status_code
-        self.content = b"" if data is None else b"json"
+        self.content = (b"" if data is None else b"json") if content is None else content
+        self.headers = headers or {}
+        self.closed = False
 
     def json(self):
         return self.data
+
+    def close(self):
+        self.closed = True
 
 
 class FakeSession:
@@ -80,6 +85,8 @@ class OpenAICompatibleProviderTest(SimpleTestCase):
         self.assertEqual(url, "https://model.example/v1/chat/completions")
         self.assertEqual(request["headers"]["Authorization"], "Bearer server-secret")
         self.assertEqual(request["timeout"], 12)
+        self.assertFalse(request["allow_redirects"])
+        self.assertTrue(request["stream"])
         self.assertEqual(request["json"]["tools"], tools)
         self.assertEqual(result.tool_calls[0].name, "query_objects")
 
@@ -96,6 +103,18 @@ class OpenAICompatibleProviderTest(SimpleTestCase):
 
         with self.assertRaises(ProviderTimeoutError):
             provider.complete([{"role": "user", "content": "Hello"}], [])
+
+    def test_rejects_oversized_provider_response(self):
+        session = FakeSession(FakeResponse({"choices": []}, content=b"x" * 101))
+        provider = OpenAICompatibleProvider({**self.config, "max_http_response_bytes": 100}, session=session)
+
+        with self.assertRaisesMessage(ProviderError, "oversized response"):
+            provider.complete([{"role": "user", "content": "Hello"}], [])
+        self.assertTrue(session.response.closed)
+
+    def test_rejects_plain_http_for_remote_provider_without_opt_in(self):
+        with self.assertRaisesMessage(ProviderError, "Plain HTTP"):
+            OpenAICompatibleProvider({**self.config, "base_url": "http://model.internal/v1"})
 
 
 class MyGPTApiProviderTest(SimpleTestCase):
@@ -143,6 +162,8 @@ class MyGPTApiProviderTest(SimpleTestCase):
             ],
         )
         login_request = session.request_calls[0][2]
+        self.assertFalse(login_request["allow_redirects"])
+        self.assertTrue(login_request["stream"])
         self.assertEqual(
             login_request["json"],
             {

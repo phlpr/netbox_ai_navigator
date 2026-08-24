@@ -7,6 +7,12 @@ from typing import Any
 import requests
 
 from netbox_ai_navigator.exceptions import ProviderError, ProviderTimeoutError
+from netbox_ai_navigator.provider_http import (
+    ProviderResponseTooLargeError,
+    close_response,
+    normalize_provider_url,
+    read_bounded_json,
+)
 
 from .base import ModelProvider, ModelResponse, ModelToolCall
 
@@ -21,20 +27,25 @@ class MyGPTApiProvider(ModelProvider):
     """MyGPT channel API provider using a shared service user."""
 
     def __init__(self, config: dict[str, Any], session=None, *, conversation_id: str | None = None):
-        self.api_url = str(config.get("api_url", "")).rstrip("/")
+        try:
+            self.api_url = normalize_provider_url(
+                config.get("api_url"),
+                allow_insecure_http=config.get("allow_insecure_http", False) is True,
+            )
+        except ValueError as exc:
+            raise ProviderError(f"The custom connector API URL is invalid: {exc}") from exc
         self.tenant = str(config.get("tenant") or "").strip()
         self.service_user = str(config.get("service_user") or "").strip()
         self.service_password = str(config.get("service_password") or "")
         self.channel_id = str(config.get("channel_id") or "").strip()
         self.timeout = float(config.get("timeout", 60))
+        self.max_http_response_bytes = max(1, min(int(config.get("max_http_response_bytes", 2_000_000)), 10_000_000))
         self.delete_conversations = config.get("delete_conversations", True) is True
         self.model_name = str(config.get("model") or "mygpt_api")
         self.session = session or requests.Session()
         self._token: str | None = None
         self.conversation_id = str(conversation_id).strip() if conversation_id else None
 
-        if not self.api_url:
-            raise ProviderError("The MyGPT API URL is not configured.")
         if not self.tenant:
             raise ProviderError("The MyGPT tenant is not configured.")
         if not self.service_user:
@@ -140,6 +151,8 @@ class MyGPTApiProvider(ModelProvider):
                 f"{self.api_url}/{path.lstrip('/')}",
                 headers=headers,
                 timeout=self.timeout,
+                allow_redirects=False,
+                stream=True,
                 **kwargs,
             )
         except requests.Timeout as exc:
@@ -148,6 +161,7 @@ class MyGPTApiProvider(ModelProvider):
             raise ProviderError("The MyGPT API could not be reached.") from exc
 
         if response.status_code == 401 and authenticated and retry_authentication:
+            close_response(response)
             self._token = None
             return self._request(
                 method,
@@ -157,13 +171,16 @@ class MyGPTApiProvider(ModelProvider):
                 **kwargs,
             )
         if not 200 <= response.status_code < 300:
+            close_response(response)
             raise ProviderError(f"The MyGPT API returned HTTP {response.status_code}.")
-        if response.status_code == 204 or not getattr(response, "content", b""):
-            return None
         try:
-            return response.json()
-        except (TypeError, ValueError) as exc:
+            return read_bounded_json(response, max_bytes=self.max_http_response_bytes)
+        except ProviderResponseTooLargeError as exc:
+            raise ProviderError("The MyGPT API returned an oversized response.") from exc
+        except (TypeError, UnicodeDecodeError, ValueError) as exc:
             raise ProviderError("The MyGPT API returned invalid JSON.") from exc
+        finally:
+            close_response(response)
 
     def delete_conversation(self, *, suppress_errors: bool = False) -> None:
         conversation_id = self.conversation_id
