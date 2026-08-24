@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -10,6 +11,10 @@ from netbox_ai_navigator.exceptions import ProviderError, ProviderTimeoutError
 from .base import ModelProvider, ModelResponse, ModelToolCall
 
 logger = logging.getLogger("netbox.plugins.netbox_ai_navigator.model_providers.mygpt_api")
+
+
+class _InvalidToolProtocolError(ProviderError):
+    pass
 
 
 class MyGPTApiProvider(ModelProvider):
@@ -69,7 +74,21 @@ class MyGPTApiProvider(ModelProvider):
                     "origin": "user",
                 },
             )
-            result = self._parse_chat_response(response, tools)
+            try:
+                result = self._parse_chat_response(response, tools)
+            except _InvalidToolProtocolError:
+                logger.info("Retrying malformed custom connector tool protocol response")
+                repaired_response = self._request(
+                    "POST",
+                    "messages",
+                    json={
+                        "channel_id": self.channel_id,
+                        "conversation_id": self.conversation_id,
+                        "payload": self._protocol_repair_prompt(tools),
+                        "origin": "user",
+                    },
+                )
+                result = self._parse_chat_response(repaired_response, tools)
         except Exception:
             if created_conversation:
                 self.delete_conversation(suppress_errors=True)
@@ -227,36 +246,70 @@ class MyGPTApiProvider(ModelProvider):
         if payload_type == "final":
             content = payload.get("content")
             if not isinstance(content, str) or not content.strip():
-                raise ProviderError("MyGPT returned an invalid final response.")
+                raise _InvalidToolProtocolError("MyGPT returned an invalid final response.")
             return ModelResponse(content=content)
         if payload_type != "tool_calls" or not isinstance(payload.get("calls"), list):
-            raise ProviderError("MyGPT returned an invalid tool protocol response.")
+            raise _InvalidToolProtocolError("MyGPT returned an invalid tool protocol response.")
 
         allowed_names = {cls._compact_tool(tool)["name"] for tool in tools}
         tool_calls: list[ModelToolCall] = []
         for raw_call in payload["calls"]:
             if not isinstance(raw_call, dict):
-                raise ProviderError("MyGPT returned an invalid tool call.")
+                raise _InvalidToolProtocolError("MyGPT returned an invalid tool call.")
             name = raw_call.get("name")
             arguments = raw_call.get("arguments")
             if name not in allowed_names or not isinstance(arguments, dict):
-                raise ProviderError("MyGPT returned an invalid tool call.")
+                raise _InvalidToolProtocolError("MyGPT returned an invalid tool call.")
             tool_calls.append(ModelToolCall(id=f"call_{uuid.uuid4().hex}", name=name, arguments=arguments))
         if not tool_calls:
-            raise ProviderError("MyGPT returned an empty tool call list.")
+            raise _InvalidToolProtocolError("MyGPT returned an empty tool call list.")
         return ModelResponse(tool_calls=tool_calls)
 
-    @staticmethod
-    def _parse_protocol_json(text: str) -> dict[str, Any]:
-        stripped = text.strip()
-        if stripped.startswith("```json") and stripped.endswith("```"):
-            stripped = stripped[7:-3].strip()
-        elif stripped.startswith("```") and stripped.endswith("```"):
-            stripped = stripped[3:-3].strip()
-        try:
-            data = json.loads(stripped)
-        except json.JSONDecodeError as exc:
-            raise ProviderError("MyGPT returned invalid tool protocol JSON.") from exc
-        if not isinstance(data, dict):
-            raise ProviderError("MyGPT returned invalid tool protocol JSON.")
-        return data
+    @classmethod
+    def _parse_protocol_json(cls, text: str) -> dict[str, Any]:
+        stripped = text.strip().lstrip("\ufeff")
+        candidates = [stripped]
+        fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.IGNORECASE | re.DOTALL)
+        if fenced:
+            candidates.insert(0, fenced.group(1).strip())
+
+        decoded: list[dict[str, Any]] = []
+        for candidate in candidates:
+            value: Any = candidate
+            for _depth in range(2):
+                try:
+                    value = json.loads(value) if isinstance(value, str) else value
+                except (TypeError, json.JSONDecodeError):
+                    break
+                if isinstance(value, dict):
+                    decoded.append(value)
+                    break
+
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r"{", stripped):
+            try:
+                value, _end = decoder.raw_decode(stripped, match.start())
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict) and value.get("type") in {"final", "tool_calls"}:
+                decoded.append(value)
+
+        unique = {
+            json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")): value
+            for value in decoded
+            if value.get("type") in {"final", "tool_calls"}
+        }
+        if len(unique) != 1:
+            raise _InvalidToolProtocolError("MyGPT returned invalid tool protocol JSON.")
+        return next(iter(unique.values()))
+
+    @classmethod
+    def _protocol_repair_prompt(cls, tools: list[dict[str, Any]]) -> str:
+        allowed_names = ", ".join(cls._compact_tool(tool)["name"] for tool in tools)
+        return (
+            "Your previous response could not be parsed. Return exactly one JSON object without prose, reasoning, "
+            "or Markdown fences. Use either "
+            '{"type":"tool_calls","calls":[{"name":"allowed_tool","arguments":{}}]} or '
+            '{"type":"final","content":"answer"}. '
+            f"Allowed tool names: {allowed_names}."
+        )

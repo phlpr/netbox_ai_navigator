@@ -70,8 +70,9 @@ class FakeDeviceToolProvider(ToolProvider):
 
 
 class FakeSearchThenDetailToolProvider(ToolProvider):
-    def __init__(self, objects):
+    def __init__(self, objects, *, include_site=False):
         self.objects = objects
+        self.include_site = include_site
         self.calls = []
 
     def list_tools(self, context):
@@ -91,21 +92,38 @@ class FakeSearchThenDetailToolProvider(ToolProvider):
     def call_tool(self, context, name, arguments):
         self.calls.append((name, arguments))
         if name == "search_netbox":
+            objects = [
+                {
+                    "id": item["id"],
+                    "display": item["display"],
+                    "display_url": item["display_url"],
+                    "object_type": "dcim.device",
+                }
+                for item in self.objects
+            ]
+            if self.include_site:
+                objects.insert(
+                    0,
+                    {
+                        "id": 2,
+                        "display": "GeoView Graz Edge",
+                        "display_url": "http://testserver/dcim/sites/2/",
+                        "object_type": "dcim.site",
+                    },
+                )
             return {
                 "query": "graz",
-                "returned": len(self.objects),
-                "objects": [
-                    {
-                        "id": item["id"],
-                        "display": item["display"],
-                        "display_url": item["display_url"],
-                        "object_type": "dcim.device",
-                    }
-                    for item in self.objects
-                ],
+                "returned": len(objects),
+                "objects": objects,
             }
         if name == "get_object":
             item = next(value for value in self.objects if value["id"] == arguments["object_id"])
+            if arguments.get("fields") == []:
+                item = {
+                    "id": item["id"],
+                    "display": item["display"],
+                    "display_url": item["display_url"],
+                }
             return {"object_type": "dcim.device", "found": True, "object": item}
         raise ToolNotFoundError(name)
 
@@ -302,6 +320,84 @@ class AgentRuntimeTest(SimpleTestCase):
         ]
         self.assertEqual(len(refinement_messages), 1)
 
+    def test_repeated_global_search_is_automatically_hydrated_into_a_table(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(tool_calls=[ModelToolCall("call-1", "search_netbox", {"query": "graz"})]),
+                ModelResponse(content="I found three matching objects."),
+                ModelResponse(tool_calls=[ModelToolCall("call-2", "search_netbox", {"query": "graz"})]),
+                ModelResponse(content="I found the same three matching objects."),
+            ]
+        )
+        tools = FakeSearchThenDetailToolProvider(GRAZ_DEVICES, include_site=True)
+        runtime = AgentRuntime(model, tools)
+
+        result = runtime.run(self.context, [{"role": "user", "content": "Show all devices in Graz."}])
+
+        self.assertEqual(result.tool_calls, 4)
+        self.assertEqual(
+            [name for name, _arguments in tools.calls],
+            ["search_netbox", "search_netbox", "get_object", "get_object"],
+        )
+        self.assertIn("Verified NetBox results (2):", result.answer)
+        self.assertIn("| Device | Role | Site | Location | Status |", result.answer)
+        self.assertNotIn("[GeoView Graz Edge](/dcim/sites/2/)", result.answer)
+
+    def test_exhausted_model_tool_budget_still_hydrates_discovery_results(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(tool_calls=[ModelToolCall("call-1", "search_netbox", {"query": "graz"})]),
+                ModelResponse(content="I found three matching objects."),
+            ]
+        )
+        tools = FakeSearchThenDetailToolProvider(GRAZ_DEVICES, include_site=True)
+        runtime = AgentRuntime(model, tools, max_tool_calls=1)
+
+        result = runtime.run(self.context, [{"role": "user", "content": "Show all devices in Graz."}])
+
+        self.assertEqual(result.tool_calls, 1)
+        self.assertEqual(
+            [name for name, _arguments in tools.calls],
+            ["search_netbox", "get_object", "get_object"],
+        )
+        self.assertIn("Verified NetBox results (2):", result.answer)
+        self.assertIn("| Device | Role | Site | Location | Status |", result.answer)
+
+    def test_identity_only_detail_calls_are_rehydrated_with_useful_fields(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(tool_calls=[ModelToolCall("call-1", "search_netbox", {"query": "graz"})]),
+                ModelResponse(content="I found three matching objects."),
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "call-2",
+                            "get_object",
+                            {"object_type": "dcim.device", "object_id": 4, "fields": []},
+                        ),
+                        ModelToolCall(
+                            "call-3",
+                            "get_object",
+                            {"object_type": "dcim.device", "object_id": 3, "fields": []},
+                        ),
+                    ]
+                ),
+                ModelResponse(content="I found the two devices."),
+            ]
+        )
+        tools = FakeSearchThenDetailToolProvider(GRAZ_DEVICES, include_site=True)
+        runtime = AgentRuntime(model, tools)
+
+        result = runtime.run(self.context, [{"role": "user", "content": "Show all devices in Graz."}])
+
+        self.assertEqual(result.tool_calls, 5)
+        self.assertEqual(
+            [name for name, _arguments in tools.calls],
+            ["search_netbox", "get_object", "get_object", "get_object", "get_object"],
+        )
+        self.assertIn("Verified NetBox results (2):", result.answer)
+        self.assertIn("| Device | Role | Site | Location | Status |", result.answer)
+
     def test_followup_table_is_refreshed_with_current_netbox_data(self):
         answer = "\n".join(
             (
@@ -417,6 +513,32 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertIn("Verified NetBox results (2):", answer)
         self.assertIn("| Device | Role | Site | Location | Status |", answer)
         self.assertNotIn("[GeoView Graz Edge](/dcim/sites/2/)", answer)
+
+    def test_fallback_tables_unique_largest_detailed_object_group(self):
+        site = {
+            "id": 2,
+            "display": "GeoView Graz Edge",
+            "display_url": "http://testserver/dcim/sites/2/",
+            "name": "GeoView Graz Edge",
+            "slug": "geoview-graz-edge",
+        }
+        records = AgentRuntime._grounding_records(
+            "query_objects",
+            {"ok": True, "result": {"object_type": "dcim.site", "objects": [site]}},
+        )
+        records.extend(
+            AgentRuntime._grounding_records(
+                "query_objects",
+                {"ok": True, "result": {"object_type": "dcim.device", "objects": GRAZ_DEVICES}},
+            )
+        )
+
+        answer = AgentRuntime._grounded_fallback(records)
+
+        self.assertIn("Verified NetBox results (2):", answer)
+        self.assertIn("| Device | Role | Site | Location | Status |", answer)
+        self.assertIn("[gv-graz-access-01](/dcim/devices/4/)", answer)
+        self.assertNotIn("GeoView Graz Edge](/dcim/sites/2/)", answer)
 
     def test_builds_generic_fallback_table_for_plugin_objects(self):
         objects = [

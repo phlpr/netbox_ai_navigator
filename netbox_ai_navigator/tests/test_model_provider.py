@@ -214,6 +214,43 @@ class MyGPTApiProviderTest(SimpleTestCase):
         self.assertIn('"name":"query_objects"', prompt)
         self.assertIn('"role":"user"', prompt)
 
+    def test_parses_wrapped_and_double_encoded_protocol_json(self):
+        expected = {
+            "type": "tool_calls",
+            "calls": [{"name": "query_objects", "arguments": {"limit": 2}}],
+        }
+        wrapped = f"Reasoning omitted.\n```json\n{json.dumps(expected)}\n```"
+        double_encoded = json.dumps(json.dumps(expected))
+
+        self.assertEqual(MyGPTApiProvider._parse_protocol_json(wrapped), expected)
+        self.assertEqual(MyGPTApiProvider._parse_protocol_json(double_encoded), expected)
+
+    def test_retries_one_malformed_tool_protocol_response(self):
+        valid_protocol = json.dumps(
+            {
+                "type": "tool_calls",
+                "calls": [{"name": "query_objects", "arguments": {"limit": 2}}],
+            }
+        )
+        session = FakeSession(
+            responses=[
+                FakeResponse({"access_token": "jwt-token"}),
+                FakeResponse({"id": "conversation-1", "channel_id": self.channel_id}, 201),
+                FakeResponse({"message": {"payload": "I should query NetBox first."}}, 201),
+                FakeResponse({"message": {"payload": valid_protocol}}, 201),
+            ]
+        )
+        provider = MyGPTApiProvider(self.config, session=session)
+        tools = [{"type": "function", "function": {"name": "query_objects"}}]
+
+        result = provider.complete([{"role": "user", "content": "List devices"}], tools)
+
+        self.assertEqual(result.tool_calls[0].name, "query_objects")
+        self.assertEqual(len(session.request_calls), 4)
+        repair_payload = session.request_calls[-1][2]["json"]["payload"]
+        self.assertIn("previous response could not be parsed", repair_payload)
+        self.assertIn("Allowed tool names: query_objects", repair_payload)
+
     def test_controller_prompt_reflects_available_write_tools(self):
         read_tools = [{"type": "function", "function": {"name": "query_objects"}}]
         write_tools = [

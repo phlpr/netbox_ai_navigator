@@ -30,6 +30,7 @@ NETBOX_DETAIL_PATH_RE = re.compile(r"^/(?:api/)?(?:plugins/)?[a-z0-9_-]+(?:/[a-z
 TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
 EMPTY_TABLE_VALUES = frozenset({"", "-", "—", "n/a", "none", "null"})
 DISCOVERY_ONLY_RECORD_KEYS = frozenset({"id", "display", "display_url", "object_type"})
+MAX_AUTOMATIC_HYDRATION_OBJECTS = 20
 FALLBACK_FIELD_PRIORITIES: dict[str, tuple[str, ...]] = {
     "dcim.site": ("region", "group", "status", "facility", "description"),
     "dcim.location": ("site", "parent", "status", "tenant", "description"),
@@ -168,6 +169,7 @@ class AgentRuntime:
         pending_actions: list[dict[str, Any]] = []
         search_refinement_requested = False
         data_refresh_requested = False
+        force_grounded_fallback = False
 
         while True:
             while response.tool_calls:
@@ -202,7 +204,10 @@ class AgentRuntime:
                         data_tool_attempted = True
                         new_records = self._grounding_records(tool_call.name, result)
                         grounding_records.extend(new_records)
-                        if new_records:
+                        has_detail_fields = any(
+                            set(record.data).difference(DISCOVERY_ONLY_RECORD_KEYS) for record in new_records
+                        )
+                        if new_records and (tool_call.name not in DETAIL_TOOL_NAMES or has_detail_fields):
                             successful_data_tools.add(tool_call.name)
                     messages.append(
                         {
@@ -224,6 +229,26 @@ class AgentRuntime:
                 and not pending_actions
             )
             if not needs_search_refinement:
+                needs_automatic_hydration = (
+                    "search_netbox" in successful_data_tools
+                    and not DETAIL_TOOL_NAMES.intersection(successful_data_tools)
+                    and not client_actions
+                    and not pending_actions
+                    and (search_refinement_requested or forced_final)
+                )
+                if needs_automatic_hydration:
+                    hydrated_records, hydration_calls = self._hydrate_discovery_records(
+                        context,
+                        grounding_records,
+                        limit=MAX_AUTOMATIC_HYDRATION_OBJECTS,
+                    )
+                    tool_call_count = min(self.max_tool_calls, tool_call_count + hydration_calls)
+                    grounding_records.extend(hydrated_records)
+                    if hydrated_records:
+                        successful_data_tools.add("get_object")
+                        force_grounded_fallback = True
+                    forced_final = tool_call_count >= self.max_tool_calls
+
                 answer_needs_data_refresh = (
                     not forced_final
                     and not data_refresh_requested
@@ -266,21 +291,28 @@ class AgentRuntime:
         answer = response.content or ""
         if not answer:
             raise InvalidRequestError("The model did not return a final answer.")
-        try:
-            self._validate_grounding(
-                answer,
-                grounding_records,
-                data_tool_attempted=data_tool_attempted,
-                forced_final=forced_final,
-            )
-        except UngroundedResponseError:
-            if not grounding_records:
-                raise
+        if force_grounded_fallback:
             logger.info(
-                "Returning deterministic fallback for ungrounded model response",
+                "Returning deterministic fallback after automatic search hydration",
                 extra={"grounding_records": len(grounding_records)},
             )
             answer = self._grounded_fallback(grounding_records)
+        else:
+            try:
+                self._validate_grounding(
+                    answer,
+                    grounding_records,
+                    data_tool_attempted=data_tool_attempted,
+                    forced_final=forced_final,
+                )
+            except UngroundedResponseError:
+                if not grounding_records:
+                    raise
+                logger.info(
+                    "Returning deterministic fallback for ungrounded model response",
+                    extra={"grounding_records": len(grounding_records)},
+                )
+                answer = self._grounded_fallback(grounding_records)
         if len(answer) > self.max_response_chars:
             suffix = "\n\n[Response truncated by NetBox AI Navigator.]"
             answer = answer[: max(0, self.max_response_chars - len(suffix))] + suffix
@@ -299,6 +331,52 @@ class AgentRuntime:
             NETBOX_DETAIL_PATH_RE.fullmatch(cls._url_key(target))
             for _link_text, target in MARKDOWN_LINK_RE.findall(answer)
         )
+
+    def _hydrate_discovery_records(
+        self,
+        context: ToolContext,
+        records: list[GroundingRecord],
+        *,
+        limit: int,
+    ) -> tuple[list[GroundingRecord], int]:
+        if limit <= 0:
+            return [], 0
+
+        groups: dict[str, list[GroundingRecord]] = {}
+        seen: set[tuple[str, int]] = set()
+        for record in records:
+            object_id = record.data.get("id")
+            if (
+                not record.object_type
+                or isinstance(object_id, bool)
+                or not isinstance(object_id, int)
+                or object_id < 1
+                or set(record.data).difference(DISCOVERY_ONLY_RECORD_KEYS)
+            ):
+                continue
+            key = (record.object_type, object_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            groups.setdefault(record.object_type, []).append(record)
+        if not groups:
+            return [], 0
+
+        selected = max(groups.values(), key=len)
+        hydrated: list[GroundingRecord] = []
+        calls = 0
+        for record in selected[:limit]:
+            result = self._execute_tool(
+                context,
+                "get_object",
+                {
+                    "object_type": record.object_type,
+                    "object_id": record.data["id"],
+                },
+            )
+            calls += 1
+            hydrated.extend(self._grounding_records("get_object", result))
+        return hydrated, calls
 
     @staticmethod
     def _valid_client_action(action: dict[str, Any]) -> bool:
@@ -467,6 +545,20 @@ class AgentRuntime:
         ]
         if detailed_records:
             unique_records = detailed_records
+
+        # Discovery commonly resolves a container (for example a site) before
+        # querying the requested child objects. If grounding validation later
+        # requires the deterministic fallback, keep that supporting container
+        # from preventing an otherwise useful homogeneous result table. Only
+        # select a group when it is uniquely largest; genuinely mixed results
+        # with equally sized groups remain a list.
+        groups: dict[str, list[GroundingRecord]] = {}
+        for record in unique_records:
+            groups.setdefault(record.object_type, []).append(record)
+        if len(groups) > 1:
+            ranked_groups = sorted(groups.values(), key=len, reverse=True)
+            if len(ranked_groups[0]) > len(ranked_groups[1]) and cls._fallback_table(ranked_groups[0]):
+                unique_records = ranked_groups[0]
 
         lines = [_("Verified NetBox results ({count}):").format(count=len(unique_records)), ""]
         table = cls._fallback_table(unique_records)
