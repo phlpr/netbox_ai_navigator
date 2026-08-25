@@ -29,6 +29,12 @@ Version 0.1 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It pro
 The OpenAI-compatible provider requires native tool calling. The Custom API Connector adapts a deployment-specific
 backend to the same internal agent contract.
 
+## Compatibility
+
+| Plugin Release | NetBox | Python |
+|---|---|---|
+| `0.1.x` | `4.5.10` to `4.6.x` (tested with `4.5.10` and `4.6.8`; CI uses `4.6.9`) | `3.12`, `3.13`, `3.14` |
+
 ## Architecture
 
 ```text
