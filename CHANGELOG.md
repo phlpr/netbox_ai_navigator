@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0 - 2026-08-25
+
 - Require HTTPS for remote model providers unless insecure HTTP is explicitly enabled, reject redirects, and bound
   provider response bodies.
 - Rate-limit chat requests per authenticated user through the configured Django cache.
@@ -10,9 +12,6 @@
 - Prevent documentation indexing through symlinks that escape an indexed directory.
 - Add a private vulnerability-reporting policy, deployment security guidance, pinned security CI, and dependency
   update automation.
-
-## 0.1.0 - Unreleased
-
 - Add the standalone NetBox plugin and global chat interface.
 - Add an OpenAI-compatible model provider with tool calling.
 - Add a deployment-specific Custom API Connector using server-side credentials and temporary conversations.
@@ -24,3 +23,4 @@
 - Add RBAC, provider, agent, tool, and view tests.
 - Add assignable `use_read` and future-ready `use_write` Navigator capabilities; hide and deny the assistant when
   neither action is granted.
+- Support NetBox 4.5.10 through 4.6.x and Python 3.12 through 3.14.
