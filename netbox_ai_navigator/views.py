@@ -4,12 +4,15 @@ import logging
 import time
 from typing import Any
 
+from django.apps import apps
 from django.core.cache import cache
+from django.db import router, transaction
 from django.http import JsonResponse
 from django.urls import resolve
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.cache import never_cache
+from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from .agent import build_agent_runtime
@@ -340,17 +343,50 @@ class ChangeApprovalView(ChatView):
         if method.lower() not in getattr(match.func, "actions", {}):
             raise InvalidRequestError("The stored REST API action is not supported.")
 
-        factory = APIRequestFactory()
-        api_request = factory.generic(
-            method,
-            endpoint,
-            data=json.dumps(payload, ensure_ascii=False),
-            content_type="application/json",
-            HTTP_IF_MATCH=etag or "",
-            HTTP_HOST=request.get_host(),
-        )
-        force_authenticate(api_request, user=request.user)
-        return match.func(api_request, *match.args, **match.kwargs)
+        def execute():
+            factory = APIRequestFactory()
+            api_request = factory.generic(
+                method,
+                endpoint,
+                data=json.dumps(payload, ensure_ascii=False),
+                content_type="application/json",
+                HTTP_IF_MATCH=etag or "",
+                HTTP_HOST=request.get_host(),
+            )
+            force_authenticate(api_request, user=request.user)
+            return match.func(api_request, *match.args, **match.kwargs)
+
+        if method not in {"PATCH", "DELETE"}:
+            return execute()
+
+        object_type = action.get("object_type")
+        object_id = action.get("object_id")
+        if (
+            not isinstance(object_type, str)
+            or isinstance(object_id, bool)
+            or not isinstance(object_id, int)
+            or object_id < 1
+        ):
+            raise InvalidRequestError("The stored change proposal is invalid.")
+        try:
+            model = apps.get_model(object_type)
+        except (LookupError, ValueError) as exc:
+            raise InvalidRequestError("The stored change proposal is invalid.") from exc
+
+        database = router.db_for_write(model)
+        with transaction.atomic(using=database):
+            instance = model._default_manager.using(database).select_for_update().filter(pk=object_id).first()
+            if instance is not None and etag and ChangeApprovalView._object_etag(instance) != etag:
+                return Response(
+                    {"detail": "The object has changed since the proposal was created."},
+                    status=412,
+                )
+            return execute()
+
+    @staticmethod
+    def _object_etag(instance) -> str | None:
+        timestamp = getattr(instance, "last_updated", None) or getattr(instance, "created", None)
+        return f'W/"{timestamp.isoformat()}"' if timestamp else None
 
     @staticmethod
     def _json_safe(value: Any) -> Any:

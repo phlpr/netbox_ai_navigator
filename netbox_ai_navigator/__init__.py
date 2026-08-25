@@ -12,7 +12,7 @@ class NetBoxAINavigatorConfig(PluginConfig):
     version = __version__
     author = "phlpr"
     base_url = "ai-navigator"
-    min_version = "4.6.0"
+    min_version = "4.5.10"
     max_version = "4.6.99"
     default_settings = DEFAULT_SETTINGS
 

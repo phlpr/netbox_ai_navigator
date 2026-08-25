@@ -10,7 +10,7 @@ separate two-phase approval workflow and are never executed directly by the mode
 
 ## Status
 
-Version 0.1 targets NetBox 4.6 and Python 3.12 or newer. It provides:
+Version 0.1 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It provides:
 
 - a localized, resizable global chat window with context from the currently visible NetBox page;
 - an OpenAI Chat Completions provider and a deployment-specific Custom API Connector with function/tool calling;
@@ -201,11 +201,11 @@ NetBox REST serializer, but no object is saved. The exact before/after preview i
 session and displayed with Confirm and Cancel controls. Approval tokens are single-use and expire after ten minutes by
 default.
 
-After confirmation, the plugin dispatches the stored action through the registered NetBox REST ViewSet. NetBox then
-rechecks the current user's normal object permissions, serializer validation, plugin-specific rules, and the object's
-ETag. Concurrent changes therefore invalidate stale proposals instead of being overwritten. Successful changes use a
-fixed AI Navigator changelog message. Credential-bearing object types and fields remain blocked from both reads and
-writes.
+After confirmation, the plugin locks the target object and rechecks its ETag before dispatching the stored action
+through the registered NetBox REST ViewSet. NetBox then rechecks the current user's normal object permissions,
+serializer validation, and plugin-specific rules. Concurrent changes therefore invalidate stale proposals instead of
+being overwritten; NetBox 4.6 additionally enforces the same ETag through its REST API. Successful changes use a fixed
+AI Navigator changelog message. Credential-bearing object types and fields remain blocked from both reads and writes.
 
 ## Development and tests
 
@@ -216,8 +216,8 @@ ruff format --check --exclude netbox_ai_navigator/migrations netbox_ai_navigator
 ruff check --exclude netbox_ai_navigator/migrations netbox_ai_navigator testing_configuration.py pyproject.toml
 ```
 
-Run the plugin test suite from a NetBox 4.6 source checkout. `testing_configuration.py` adds this plugin to NetBox's
-standard test configuration:
+Run the plugin test suite from a supported NetBox source checkout (4.5.10 through 4.6.x).
+`testing_configuration.py` adds this plugin to NetBox's standard test configuration:
 
 ```bash
 export PYTHONPATH=/path/to/netbox_ai_navigator:/path/to/netbox/netbox
