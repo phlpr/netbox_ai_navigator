@@ -5,7 +5,7 @@ PLUGINS_CONFIG = {
     "netbox_ai_navigator": {
         "model": {
             "provider": "openai_compatible",
-            "base_url": "http://model.invalid/v1",
+            "base_url": "https://model.invalid/v1",
             "api_key": "test-key",
             "model": "test-model",
         }
