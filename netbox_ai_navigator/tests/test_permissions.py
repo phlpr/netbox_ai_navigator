@@ -4,7 +4,9 @@ from core.models import ObjectType
 from dcim.models import Site
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory, TestCase
+from tenancy.models import Contact, ContactAssignment, ContactRole
 from users.models import ObjectPermission
+from virtualization.models import VirtualMachine
 
 from netbox_ai_navigator.config import user_can_read_assistant, user_can_write_assistant
 from netbox_ai_navigator.exceptions import ToolValidationError
@@ -143,6 +145,73 @@ class CurrentUserRBACIntegrationTest(TestCase):
         )
 
         self.assertEqual(result["objects"], [])
+
+    def test_contact_capable_objects_can_be_filtered_by_missing_assignment(self):
+        assigned_vm = VirtualMachine.objects.create(name="vm-with-contact", status="active")
+        first_unassigned_vm = VirtualMachine.objects.create(name="vm-without-contact-1", status="active")
+        second_unassigned_vm = VirtualMachine.objects.create(name="vm-without-contact-2", status="active")
+        contact = Contact.objects.create(name="VM owner")
+        role = ContactRole.objects.create(name="Owner", slug="owner")
+        ContactAssignment.objects.create(object=assigned_vm, contact=contact, role=role)
+        provider = LocalCurrentUserProvider(
+            {"allowed_object_types": ["virtualization.virtualmachine"], "max_results": 50}
+        )
+
+        description = provider.call_tool(
+            self.context_for(self.superuser),
+            "describe_object_type",
+            {"object_type": "virtualization.virtualmachine"},
+        )
+        result = provider.call_tool(
+            self.context_for(self.superuser),
+            "query_objects",
+            {
+                "object_type": "virtualization.virtualmachine",
+                "filters": {"has_contact": False},
+                "fields": ["name"],
+                "order_by": ["name"],
+            },
+        )
+
+        self.assertIn("has_contact", {item["name"] for item in description["filters"]})
+        self.assertEqual(
+            [item["name"] for item in result["objects"]],
+            [first_unassigned_vm.name, second_unassigned_vm.name],
+        )
+        self.assertFalse(result["has_more"])
+
+        assigned = provider.call_tool(
+            self.context_for(self.superuser),
+            "query_objects",
+            {
+                "object_type": "virtualization.virtualmachine",
+                "filters": {"has_contact": True},
+                "fields": ["name"],
+            },
+        )
+        self.assertEqual([item["name"] for item in assigned["objects"]], [assigned_vm.name])
+
+        truncated = provider.call_tool(
+            self.context_for(self.superuser),
+            "query_objects",
+            {
+                "object_type": "virtualization.virtualmachine",
+                "filters": {"has_contact": False},
+                "fields": ["name"],
+                "limit": 1,
+            },
+        )
+        self.assertTrue(truncated["has_more"])
+
+        with self.assertRaisesMessage(ToolValidationError, "has_contact must be a boolean."):
+            provider.call_tool(
+                self.context_for(self.superuser),
+                "query_objects",
+                {
+                    "object_type": "virtualization.virtualmachine",
+                    "filters": {"has_contact": "false"},
+                },
+            )
 
     def test_navigation_only_targets_visible_object(self):
         result = self.provider.call_tool(

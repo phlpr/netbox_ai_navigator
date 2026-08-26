@@ -210,6 +210,7 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
         self.assertEqual(object_type_schema["pattern"], "^[a-z0-9_]+\\.[a-z0-9_]+$")
         self.assertIn("core or plugin", query_description)
         self.assertIn("q filter for free-text searches on the queried object", query_description)
+        self.assertIn("has_contact", query_description)
         self.assertIn("returned site_id or location_id", query_description)
         self.assertIn("site and location accept registered choices", query_description)
 

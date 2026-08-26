@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from django.apps import apps
-from django.core.exceptions import ValidationError
+from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.db import DatabaseError, connection, transaction
 from django.http import QueryDict
 from django.urls import NoReverseMatch, resolve, reverse
@@ -26,6 +26,7 @@ from .context import ToolContext
 IDENTITY_FIELDS = ("id", "display", "display_url")
 MAX_WRITE_PAYLOAD_CHARS = 20000
 CHANGELOG_MESSAGE = "Changed through NetBox AI Navigator after explicit user confirmation."
+HAS_CONTACT_FILTER = "has_contact"
 
 # These restrictions are deliberately not configurable. Dynamic discovery must
 # never turn a newly installed model into a credential-reading side channel.
@@ -146,7 +147,8 @@ class LocalCurrentUserProvider(ToolProvider):
                 description=(
                     "Query read-only core or plugin NetBox objects. Filters use the registered NetBox FilterSet "
                     "semantics. Discover unknown model labels with list_object_types and their exact fields and "
-                    "filters with describe_object_type. "
+                    "filters with describe_object_type. Models supporting contact assignments expose the synthetic "
+                    "boolean filter has_contact; use false to find objects without a directly assigned contact. "
                     "Use the q filter for free-text searches on the queried object. To find objects by city, site, "
                     "or location, first query dcim.site or dcim.location with q, then filter the target object type "
                     "by the returned site_id or location_id. A target object's q filter does not necessarily search "
@@ -427,6 +429,18 @@ class LocalCurrentUserProvider(ToolProvider):
             for name, filter_ in available_filters.items()
             if self._field_is_allowed(name)
         ]
+        if (
+            self._supports_contact_filter(model)
+            and HAS_CONTACT_FILTER not in available_filters
+            and self._field_is_allowed(HAS_CONTACT_FILTER)
+        ):
+            filters.append(
+                {
+                    "name": HAS_CONTACT_FILTER,
+                    "label": str(_("Has directly assigned contact")),
+                    "type": "BooleanFilter",
+                }
+            )
         return {
             "object_type": label,
             "name": str(model._meta.verbose_name),
@@ -445,9 +459,16 @@ class LocalCurrentUserProvider(ToolProvider):
         fields = self._select_fields(serializer_class, context, arguments.get("fields"))
         queryset = self._restricted_queryset(model, context)
 
-        filters = arguments.get("filters") or {}
-        if not isinstance(filters, dict):
+        requested_filters = arguments.get("filters") or {}
+        if not isinstance(requested_filters, dict):
             raise ToolValidationError("filters must be a JSON object.")
+        filters = dict(requested_filters)
+        has_contact = None
+        has_contact_requested = HAS_CONTACT_FILTER in filters and HAS_CONTACT_FILTER not in filterset_class.base_filters
+        if has_contact_requested and self._supports_contact_filter(model):
+            has_contact = filters.pop(HAS_CONTACT_FILTER)
+            if not isinstance(has_contact, bool):
+                raise ToolValidationError("has_contact must be a boolean.")
         query_data = self._to_query_dict(filters)
         filterset = filterset_class(data=query_data, queryset=queryset, request=context.request)
         supported_filters = {name for name in filterset.filters if self._field_is_allowed(name)}
@@ -461,6 +482,8 @@ class LocalCurrentUserProvider(ToolProvider):
             queryset = filterset.qs
         except ValidationError as exc:
             raise ToolValidationError(f"Invalid filters: {exc}") from exc
+        if has_contact_requested and has_contact is not None:
+            queryset = queryset.filter(contacts__isnull=not has_contact).distinct()
 
         ordering = arguments.get("order_by") or []
         if ordering:
@@ -470,7 +493,9 @@ class LocalCurrentUserProvider(ToolProvider):
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= self.max_results:
             raise ToolValidationError(f"limit must be between 1 and {self.max_results}.")
 
-        objects = list(queryset[:limit])
+        objects = list(queryset[: limit + 1])
+        has_more = len(objects) > limit
+        objects = objects[:limit]
         serialized = serializer_class(
             objects,
             many=True,
@@ -481,8 +506,18 @@ class LocalCurrentUserProvider(ToolProvider):
             "object_type": label,
             "returned": len(objects),
             "limit": limit,
+            "has_more": has_more,
             "objects": [self._sanitize_serialized_value(item) for item in serialized],
         }
+
+    @staticmethod
+    def _supports_contact_filter(model) -> bool:
+        try:
+            field = model._meta.get_field("contacts")
+        except (AttributeError, FieldDoesNotExist):
+            return False
+        related_model = getattr(field, "related_model", None)
+        return getattr(getattr(related_model, "_meta", None), "label_lower", None) == "tenancy.contactassignment"
 
     def _get_object(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
         allowed = {"object_type", "object_id", "fields"}

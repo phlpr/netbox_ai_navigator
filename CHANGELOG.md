@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a server-side `has_contact` filter for contact-capable objects and report whether query results are truncated.
+
 ## 0.1.0 - 2026-08-25
 
 - Require HTTPS for remote model providers unless insecure HTTP is explicitly enabled, reject redirects, and bound
