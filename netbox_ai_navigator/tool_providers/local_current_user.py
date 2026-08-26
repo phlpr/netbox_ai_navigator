@@ -101,6 +101,8 @@ class LocalCurrentUserProvider(ToolProvider):
         self.include_custom_fields = config.get("include_custom_fields", False) is True
         self.max_results = max(1, min(int(config.get("max_results", 50)), 50))
         self.timeout = max(0.1, float(config.get("timeout", 30)))
+        write_config = config.get("write") or {}
+        self.max_pending_actions = max(1, min(int(write_config.get("max_pending", 5)), 10))
         documentation_config = config.get("documentation") or {}
         self.documentation = (
             DocumentationIndex(documentation_config) if documentation_config.get("enabled", True) else None
@@ -328,6 +330,31 @@ class LocalCurrentUserProvider(ToolProvider):
                         },
                     ),
                     ToolDefinition(
+                        name="propose_bulk_update_named_objects",
+                        description=(
+                            "Atomically validate partial updates for two or more exact named NetBox objects of the "
+                            "same type. Use this instead of propose_update_object for a list or compact numeric name "
+                            "range. Pass every expanded exact name. It returns one separately approved preview per "
+                            "object and returns no previews if any name or change is invalid."
+                        ),
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "object_type": object_type_schema,
+                                "object_names": {
+                                    "type": "array",
+                                    "minItems": 2,
+                                    "maxItems": self.max_pending_actions,
+                                    "uniqueItems": True,
+                                    "items": {"type": "string", "minLength": 1, "maxLength": 200},
+                                },
+                                "data": write_data_schema,
+                            },
+                            "required": ["object_type", "object_names", "data"],
+                            "additionalProperties": False,
+                        },
+                    ),
+                    ToolDefinition(
                         name="propose_delete_object",
                         description=(
                             "Propose deleting one NetBox object. This never deletes immediately and always requires "
@@ -361,6 +388,7 @@ class LocalCurrentUserProvider(ToolProvider):
             "navigate_to_search": self._navigate_to_search,
             "propose_create_object": self._propose_create_object,
             "propose_update_object": self._propose_update_object,
+            "propose_bulk_update_named_objects": self._propose_bulk_update_named_objects,
             "propose_delete_object": self._propose_delete_object,
         }
         try:
@@ -376,6 +404,7 @@ class LocalCurrentUserProvider(ToolProvider):
             "navigate_to_object",
             "propose_create_object",
             "propose_update_object",
+            "propose_bulk_update_named_objects",
             "propose_delete_object",
         }
         if name not in database_tools and not (name == "describe_object_type" and self.include_custom_fields):
@@ -708,6 +737,70 @@ class LocalCurrentUserProvider(ToolProvider):
             changes=changes,
             etag=etag,
         )
+
+    def _propose_bulk_update_named_objects(
+        self,
+        context: ToolContext,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._require_write(context)
+        allowed = {"object_type", "object_names", "data"}
+        self._require_arguments(arguments, allowed, allowed)
+        label = self._normalize_label(arguments["object_type"])
+        model, _filterset_class, _serializer_class = self._resolve(label, context)
+        try:
+            name_field = model._meta.get_field("name")
+        except FieldDoesNotExist as exc:
+            raise ToolValidationError("This object type does not support exact name-based bulk updates.") from exc
+        if (
+            not getattr(name_field, "concrete", False)
+            or getattr(name_field, "is_relation", False)
+            or name_field.get_internal_type() not in {"CharField", "TextField"}
+        ):
+            raise ToolValidationError("This object type does not support exact name-based bulk updates.")
+
+        raw_names = arguments["object_names"]
+        if not isinstance(raw_names, list) or not 2 <= len(raw_names) <= self.max_pending_actions:
+            raise ToolValidationError(
+                f"object_names must contain between 2 and {self.max_pending_actions} exact names."
+            )
+        names = []
+        normalized_names = set()
+        for raw_name in raw_names:
+            if not isinstance(raw_name, str) or not raw_name.strip() or len(raw_name.strip()) > 200:
+                raise ToolValidationError("Every object name must contain between 1 and 200 characters.")
+            name = raw_name.strip()
+            normalized = name.casefold()
+            if normalized in normalized_names:
+                raise ToolValidationError("object_names must not contain duplicate names.")
+            normalized_names.add(normalized)
+            names.append(name)
+
+        queryset = self._restricted_queryset(model, context, "change")
+        instances = []
+        object_ids = set()
+        for name in names:
+            matches = list(queryset.filter(name__iexact=name).order_by("pk")[:2])
+            if len(matches) != 1 or matches[0].pk in object_ids:
+                raise ToolValidationError(
+                    f"The exact named object '{name}' does not exist, is ambiguous, or may not be changed "
+                    "by the current user. No partial batch was staged."
+                )
+            instances.append(matches[0])
+            object_ids.add(matches[0].pk)
+
+        pending_actions = []
+        for instance in instances:
+            proposal = self._propose_update_object(
+                context,
+                {"object_type": label, "object_id": instance.pk, "data": arguments["data"]},
+            )
+            pending_actions.append(proposal["pending_action"])
+        return {
+            "requires_confirmation": True,
+            "count": len(pending_actions),
+            "pending_actions": pending_actions,
+        }
 
     def _propose_delete_object(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
         self._require_write(context)

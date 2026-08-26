@@ -55,13 +55,45 @@ class FakeWriteToolProvider(FakeToolProvider):
 
     def call_tool(self, context, name, arguments):
         if name == "propose_update_object":
+            object_id = arguments.get("object_id", 4)
             return {
                 "requires_confirmation": True,
                 "pending_action": {
                     "type": "change_approval",
                     "operation": "update",
-                    "endpoint": "/api/dcim/devices/4/",
+                    "object_type": "dcim.device",
+                    "object_id": object_id,
+                    "endpoint": f"/api/dcim/devices/{object_id}/",
                 },
+            }
+        return super().call_tool(context, name, arguments)
+
+
+class FakeBulkWriteToolProvider(FakeWriteToolProvider):
+    def list_tools(self, context):
+        return [
+            *super().list_tools(context),
+            ToolDefinition(
+                name="propose_bulk_update_named_objects",
+                description="Propose an atomic named-object update batch.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+        ]
+
+    def call_tool(self, context, name, arguments):
+        if name == "propose_bulk_update_named_objects":
+            return {
+                "requires_confirmation": True,
+                "pending_actions": [
+                    {
+                        "type": "change_approval",
+                        "operation": "update",
+                        "object_type": "virtualization.virtualmachine",
+                        "object_id": object_id,
+                        "endpoint": f"/api/virtualization/virtual-machines/{object_id}/",
+                    }
+                    for object_id, _object_name in enumerate(arguments["object_names"], start=1)
+                ],
             }
         return super().call_tool(context, name, arguments)
 
@@ -267,7 +299,7 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertIn("Use search_documentation", system_message["content"])
         self.assertIn("Use navigation tools only", system_message["content"])
         self.assertIn("Write-proposal tools are available only", system_message["content"])
-        self.assertIn("awaiting manual confirmation", system_message["content"])
+        self.assertIn("each is awaiting", system_message["content"])
         self.assertIn("prefer the `q` filter", system_message["content"])
         self.assertIn("returned numeric `site_id` or `location_id`", system_message["content"])
         self.assertIn("common English or", system_message["content"])
@@ -325,6 +357,8 @@ class AgentRuntimeTest(SimpleTestCase):
 
         self.assertIn("WRITE PROPOSALS ENABLED", write_capability["content"])
         self.assertIn("Never describe this session as read-only", write_capability["content"])
+        self.assertIn("at most 5", write_capability["content"])
+        self.assertIn("call the matching proposal tool", write_capability["content"])
         self.assertIn("READ-ONLY", read_capability["content"])
         self.assertIn("No propose_* tools are available", read_capability["content"])
 
@@ -348,6 +382,160 @@ class AgentRuntimeTest(SimpleTestCase):
             "The requested change was validated and is awaiting manual confirmation.",
         )
         self.assertEqual(len(result.pending_actions), 1)
+
+    def test_rejects_non_atomic_series_of_single_object_proposals(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            f"change-{object_id}",
+                            "propose_update_object",
+                            {"object_id": object_id, "status": "deleted"},
+                        )
+                        for object_id in (1, 2, 3)
+                    ]
+                ),
+                ModelResponse(content="The devices were already deleted."),
+            ]
+        )
+
+        result = AgentRuntime(model, FakeWriteToolProvider(), max_pending_actions=3).run(
+            self.context,
+            [{"role": "user", "content": "Set the status of SPSQLPROD001 - 003 to deleted."}],
+        )
+
+        self.assertEqual(
+            result.answer,
+            "No change proposals were created because multiple updates must be validated as one atomic batch. "
+            "Please retry the complete named-object request.",
+        )
+        self.assertEqual(result.pending_actions, ())
+
+    def test_requires_atomic_bulk_tool_for_compact_numeric_update_range(self):
+        names = ["SPSQLPROD001", "SPSQLPROD002", "SPSQLPROD003"]
+        model = FakeModelProvider(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "bulk-change",
+                            "propose_bulk_update_named_objects",
+                            {
+                                "object_type": "virtualization.virtualmachine",
+                                "object_names": names,
+                                "data": {"status": "deleted"},
+                            },
+                        )
+                    ]
+                ),
+                ModelResponse(content="The objects were already changed."),
+            ]
+        )
+
+        result = AgentRuntime(model, FakeBulkWriteToolProvider()).run(
+            self.context,
+            [{"role": "user", "content": "Setze den Status von SPSQLPROD001 - 003 auf deleted"}],
+        )
+
+        exposed_tool_names = {tool["function"]["name"] for tool in model.calls[0][1]}
+        capability_message = model.calls[0][0][1]["content"]
+        self.assertNotIn("propose_update_object", exposed_tool_names)
+        self.assertIn("propose_bulk_update_named_objects", exposed_tool_names)
+        self.assertIn("single-object update tool is intentionally unavailable", capability_message)
+        self.assertEqual(len(result.pending_actions), 3)
+        self.assertEqual(
+            result.answer,
+            "3 requested changes were validated. Each change is awaiting separate manual confirmation.",
+        )
+
+    def test_rejects_single_update_tool_when_bulk_request_requires_atomic_tool(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "hidden-single-change",
+                            "propose_update_object",
+                            {"object_id": 1, "status": "deleted"},
+                        )
+                    ]
+                ),
+                ModelResponse(content="One object is ready."),
+            ]
+        )
+
+        result = AgentRuntime(model, FakeBulkWriteToolProvider()).run(
+            self.context,
+            [{"role": "user", "content": "Setze den Status von SPSQLPROD001 - 003 auf deleted"}],
+        )
+
+        self.assertEqual(
+            result.answer,
+            "No validated change proposal could be created. Please verify the exact NetBox object names and "
+            "requested value, then try again.",
+        )
+        self.assertEqual(result.pending_actions, ())
+
+    def test_discards_all_proposals_when_multi_object_limit_is_exceeded(self):
+        names = ["SPSQLPROD001", "SPSQLPROD002", "SPSQLPROD003"]
+        model = FakeModelProvider(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "bulk-change",
+                            "propose_bulk_update_named_objects",
+                            {
+                                "object_type": "virtualization.virtualmachine",
+                                "object_names": names,
+                                "data": {"status": "deleted"},
+                            },
+                        )
+                    ]
+                ),
+                ModelResponse(content="Two of three changes are ready."),
+            ]
+        )
+
+        result = AgentRuntime(model, FakeBulkWriteToolProvider(), max_pending_actions=2).run(
+            self.context,
+            [{"role": "user", "content": "Set three device statuses to deleted."}],
+        )
+
+        self.assertEqual(
+            result.answer,
+            "No change proposals were created because the request exceeded the limit of 2 objects. "
+            "Please narrow the request.",
+        )
+        self.assertEqual(result.pending_actions, ())
+
+    def test_returns_change_specific_failure_when_write_model_does_not_use_tools(self):
+        model = FakeModelProvider([ModelResponse(content="This is not a NetBox request.")])
+
+        result = AgentRuntime(model, FakeWriteToolProvider()).run(
+            self.context,
+            [{"role": "user", "content": "Setze den Status von SPSQLPROD001 - 003 auf deleted"}],
+        )
+
+        self.assertEqual(
+            result.answer,
+            "No validated change proposal could be created. Please verify the exact NetBox object names and "
+            "requested value, then try again.",
+        )
+
+    def test_returns_read_only_failure_for_recognized_change_request(self):
+        model = FakeModelProvider([ModelResponse(content="This is not a NetBox request.")])
+
+        result = AgentRuntime(model, FakeToolProvider()).run(
+            self.context,
+            [{"role": "user", "content": "Setze den Status von SPSQLPROD001 auf deleted"}],
+        )
+
+        self.assertEqual(
+            result.answer,
+            "The current session is read-only. No NetBox change can be proposed or performed.",
+        )
 
     def test_accepts_table_grounded_in_query_result(self):
         answer = "\n".join(
@@ -753,7 +941,7 @@ Both devices are used in the **GeoView Test Lab** environment."""
         with self.assertRaises(UngroundedResponseError):
             runtime.run(self.context, [{"role": "user", "content": "Show Device01."}])
 
-    def test_unknown_tools_are_rejected_and_reported_to_model(self):
+    def test_unavailable_tools_are_rejected_and_reported_to_model(self):
         model = FakeModelProvider(
             [
                 ModelResponse(tool_calls=[ModelToolCall("call-1", "delete_everything", {})]),
@@ -766,7 +954,7 @@ Both devices are used in the **GeoView Test Lab** environment."""
 
         tool_result = json.loads(model.calls[1][0][-1]["content"])
         self.assertFalse(tool_result["ok"])
-        self.assertIn("Unknown tool", tool_result["error"])
+        self.assertIn("not available for the current request", tool_result["error"])
         self.assertEqual(result.tool_calls, 1)
 
     def test_caps_tool_call_limit_at_ten(self):

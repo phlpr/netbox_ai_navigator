@@ -28,6 +28,25 @@ MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)]\(([^\s)]+)(?:\s+[^)]*)?\)")
 EMPHASIZED_VALUE_RE = re.compile(r"\*\*([^*\n]+)\*\*|`([^`\n]+)`")
 NETBOX_DETAIL_PATH_RE = re.compile(r"^/(?:api/)?(?:plugins/)?[a-z0-9_-]+(?:/[a-z0-9_-]+)+/\d+/?$")
 TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
+CHANGE_INTENT_RE = re.compile(
+    r"\b(?:set|setze|setzen|setzt|change|changed|update|updated|aktualisiere|aktualisieren|"
+    r"ändere|ändern|aendere|aendern|delete|deleted|lösche|löschen|loesche|loeschen|entferne|entfernen|"
+    r"create|erstelle|erstellen)\b",
+    re.IGNORECASE,
+)
+UPDATE_INTENT_RE = re.compile(
+    r"\b(?:set|setze|setzen|setzt|change|changed|update|updated|aktualisiere|aktualisieren|"
+    r"ändere|ändern|aendere|aendern)\b",
+    re.IGNORECASE,
+)
+NETBOX_CHANGE_SUBJECT_RE = re.compile(
+    r"\b(?:status|role|rolle|site|standort|location|tenant|device|devices|gerät|geräte|geraet|geraete|"
+    r"virtual\s+machine|virtual\s+machines|vm|vms|rack|vlan|prefix|ip(?:\s+address)?|interface|"
+    r"cluster|circuit|contact|kontakt|platform|plattform|description|beschreibung|name)\b",
+    re.IGNORECASE,
+)
+COMPACT_NUMERIC_RANGE_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_.-]*\d+\s*(?:-|–|—)\s*\d+\b")
+OBJECT_IDENTIFIER_RE = re.compile(r"(?<!\w)[A-Za-z][A-Za-z0-9_.-]*\d[A-Za-z0-9_.-]*(?!\w)")
 EMPTY_TABLE_VALUES = frozenset({"", "-", "—", "n/a", "none", "null"})
 DISCOVERY_ONLY_RECORD_KEYS = frozenset({"id", "display", "display_url", "object_type"})
 MAX_AUTOMATIC_HYDRATION_OBJECTS = 20
@@ -128,6 +147,7 @@ class AgentRuntime:
         max_tool_output_chars: int = 50000,
         max_response_chars: int = 20000,
         tool_timeout: float = 30,
+        max_pending_actions: int = 5,
     ):
         self.model_provider = model_provider
         self.tool_provider = tool_provider
@@ -137,6 +157,7 @@ class AgentRuntime:
         self.max_tool_output_chars = max(512, int(max_tool_output_chars))
         self.max_response_chars = max(1, int(max_response_chars))
         self.tool_timeout = max(0.1, float(tool_timeout))
+        self.max_pending_actions = max(1, min(int(max_pending_actions), 10))
 
     def run(
         self,
@@ -146,6 +167,19 @@ class AgentRuntime:
     ) -> AgentResult:
         normalized_history = self._normalize_history(history)
         model_tools = [definition.as_model_tool() for definition in self.tool_provider.list_tools(context)]
+        bulk_update_requested = self._looks_like_multi_object_update_request(normalized_history[-1]["content"])
+        bulk_update_available = any(
+            tool.get("function", {}).get("name") == "propose_bulk_update_named_objects" for tool in model_tools
+        )
+        if bulk_update_requested and bulk_update_available:
+            model_tools = [
+                tool
+                for tool in model_tools
+                if tool.get("function", {}).get("name") != "propose_update_object"
+            ]
+        available_tool_names = {
+            str(tool.get("function", {}).get("name", "")) for tool in model_tools
+        }
         write_proposals_available = any(
             str(tool.get("function", {}).get("name", "")).startswith("propose_") for tool in model_tools
         )
@@ -168,9 +202,20 @@ class AgentRuntime:
                         "Session capability for this request: WRITE PROPOSALS ENABLED. The current user has the "
                         "Navigator write capability and the listed propose_* tools are available. Never describe "
                         "this session as read-only or claim that the user lacks write access. For an explicit, "
-                        "unambiguous change to exactly one object, call describe_object_type and then the matching "
-                        "proposal tool without asking for separate preliminary confirmation. Manual confirmation "
-                        "happens in the browser only after the proposal tool returns a validated preview."
+                        "unambiguous request, create or delete exactly one object, or update one or more exact "
+                        f"objects (at most {self.max_pending_actions}). First resolve the target type and call "
+                        "describe_object_type, then call the matching proposal tool without asking for separate "
+                        "preliminary confirmation. For multiple exact named update targets of "
+                        "one type, call propose_bulk_update_named_objects once with every name; never call or emulate "
+                        "a series of single-object proposals. Every returned preview requires its own manual browser "
+                        "confirmation. Do not stage a partial batch if a target is unresolved or the configured "
+                        "limit would be exceeded."
+                        + (
+                            " This request contains multiple update targets. The single-object update tool is "
+                            "intentionally unavailable; use propose_bulk_update_named_objects for the complete set."
+                            if bulk_update_requested and bulk_update_available
+                            else ""
+                        )
                     ),
                 }
             )
@@ -195,6 +240,9 @@ class AgentRuntime:
         grounding_records: list[GroundingRecord] = []
         client_actions: list[dict[str, Any]] = []
         pending_actions: list[dict[str, Any]] = []
+        pending_action_identities: set[tuple[Any, ...]] = set()
+        proposal_limit_exceeded = False
+        non_atomic_batch_rejected = False
         search_refinement_requested = False
         data_refresh_requested = False
         force_grounded_fallback = False
@@ -210,17 +258,72 @@ class AgentRuntime:
                         result = {"ok": False, "error": "The maximum number of tool calls has been reached."}
                     else:
                         tool_call_count += 1
-                        result = self._execute_tool(context, tool_call.name, tool_call.arguments)
+                        if tool_call.name not in available_tool_names:
+                            result = {"ok": False, "error": "This tool is not available for the current request."}
+                        else:
+                            result = self._execute_tool(context, tool_call.name, tool_call.arguments)
                         tool_result = result.get("result") if result.get("ok") else None
-                        if isinstance(tool_result, dict) and isinstance(tool_result.get("pending_action"), dict):
-                            if pending_actions:
+                        candidate_pending_actions: list[dict[str, Any]] = []
+                        if isinstance(tool_result, dict):
+                            single_pending_action = tool_result.get("pending_action")
+                            multiple_pending_actions = tool_result.get("pending_actions")
+                            if isinstance(single_pending_action, dict) and multiple_pending_actions is None:
+                                candidate_pending_actions = [single_pending_action]
+                            elif isinstance(multiple_pending_actions, list) and single_pending_action is None:
+                                if multiple_pending_actions and all(
+                                    isinstance(action, dict) for action in multiple_pending_actions
+                                ):
+                                    candidate_pending_actions = multiple_pending_actions
+                                else:
+                                    result = {"ok": False, "error": "The proposal tool returned an invalid batch."}
+                            elif single_pending_action is not None or multiple_pending_actions is not None:
+                                result = {"ok": False, "error": "The proposal tool returned an invalid preview."}
+                        if candidate_pending_actions and result.get("ok"):
+                            identities = [
+                                self._pending_action_identity(action) for action in candidate_pending_actions
+                            ]
+                            if non_atomic_batch_rejected or (
+                                len(candidate_pending_actions) == 1 and pending_actions
+                            ):
+                                non_atomic_batch_rejected = True
+                                pending_actions.clear()
+                                pending_action_identities.clear()
                                 result = {
                                     "ok": False,
-                                    "error": "Only one change may be proposed per assistant request.",
+                                    "error": (
+                                        "Multiple single-object proposals are not allowed. Use one atomic bulk "
+                                        "proposal so no partial batch can be staged."
+                                    ),
+                                }
+                            elif (
+                                proposal_limit_exceeded
+                                or len(pending_actions) + len(candidate_pending_actions) > self.max_pending_actions
+                            ):
+                                proposal_limit_exceeded = True
+                                pending_actions.clear()
+                                pending_action_identities.clear()
+                                result = {
+                                    "ok": False,
+                                    "error": (
+                                        "The maximum number of change proposals per assistant request "
+                                        f"is {self.max_pending_actions}. No partial batch was staged."
+                                    ),
+                                }
+                            elif len(set(identities)) != len(identities) or any(
+                                identity in pending_action_identities for identity in identities
+                            ):
+                                result = {
+                                    "ok": False,
+                                    "error": "A change proposal for an object was duplicated in this request.",
                                 }
                             else:
-                                pending_actions.append(tool_result["pending_action"])
-                        if isinstance(tool_result, dict) and isinstance(tool_result.get("client_action"), dict):
+                                pending_actions.extend(candidate_pending_actions)
+                                pending_action_identities.update(identities)
+                        if (
+                            result.get("ok")
+                            and isinstance(tool_result, dict)
+                            and isinstance(tool_result.get("client_action"), dict)
+                        ):
                             action = tool_result["client_action"]
                             if (
                                 self._valid_client_action(action)
@@ -319,15 +422,40 @@ class AgentRuntime:
             response = self.model_provider.complete(messages, model_tools)
 
         answer = response.content or ""
-        if pending_actions:
-            answer = _("The requested change was validated and is awaiting manual confirmation.")
+        if non_atomic_batch_rejected:
+            answer = _(
+                "No change proposals were created because multiple updates must be validated as one atomic batch. "
+                "Please retry the complete named-object request."
+            )
+        elif proposal_limit_exceeded:
+            answer = _(
+                "No change proposals were created because the request exceeded the limit of %(limit)s objects. "
+                "Please narrow the request."
+            ) % {"limit": self.max_pending_actions}
+        elif pending_actions:
+            if len(pending_actions) == 1:
+                answer = _("The requested change was validated and is awaiting manual confirmation.")
+            else:
+                answer = _(
+                    "%(count)s requested changes were validated. Each change is awaiting separate manual "
+                    "confirmation."
+                ) % {"count": len(pending_actions)}
         elif not answer:
             raise InvalidRequestError("The model did not return a final answer.")
         elif not successful_tool_calls and not self._answer_references_netbox_data(answer):
-            answer = _(
-                "AI Navigator is limited to NetBox data, configuration, and workflows. "
-                "Please ask a NetBox-related question."
-            )
+            if self._looks_like_change_request(normalized_history[-1]["content"]):
+                if write_proposals_available:
+                    answer = _(
+                        "No validated change proposal could be created. Please verify the exact NetBox object "
+                        "names and requested value, then try again."
+                    )
+                else:
+                    answer = _("The current session is read-only. No NetBox change can be proposed or performed.")
+            else:
+                answer = _(
+                    "AI Navigator is limited to NetBox data, configuration, and workflows. "
+                    "Please ask a NetBox-related question."
+                )
         elif force_grounded_fallback:
             logger.info(
                 "Returning deterministic fallback after automatic search hydration",
@@ -367,6 +495,28 @@ class AgentRuntime:
         return any(
             NETBOX_DETAIL_PATH_RE.fullmatch(cls._url_key(target))
             for _link_text, target in MARKDOWN_LINK_RE.findall(answer)
+        )
+
+    @staticmethod
+    def _looks_like_change_request(user_message: str) -> bool:
+        return bool(CHANGE_INTENT_RE.search(user_message) and NETBOX_CHANGE_SUBJECT_RE.search(user_message))
+
+    @classmethod
+    def _looks_like_multi_object_update_request(cls, user_message: str) -> bool:
+        if not UPDATE_INTENT_RE.search(user_message) or not NETBOX_CHANGE_SUBJECT_RE.search(user_message):
+            return False
+        if COMPACT_NUMERIC_RANGE_RE.search(user_message):
+            return True
+        identifiers = {match.casefold() for match in OBJECT_IDENTIFIER_RE.findall(user_message)}
+        return len(identifiers) >= 2
+
+    @staticmethod
+    def _pending_action_identity(action: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            action.get("operation"),
+            action.get("object_type"),
+            action.get("object_id"),
+            action.get("endpoint"),
         )
 
     def _hydrate_discovery_records(
@@ -873,4 +1023,5 @@ def build_agent_runtime(plugin_settings: dict[str, Any], *, conversation_id: str
         max_tool_output_chars=tools_config.get("max_output_chars", 50000),
         max_response_chars=model_config.get("max_response_chars", 20000),
         tool_timeout=tools_config.get("timeout", 30),
+        max_pending_actions=(tools_config.get("write") or {}).get("max_pending", 5),
     )

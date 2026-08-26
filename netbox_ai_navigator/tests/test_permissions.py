@@ -86,8 +86,8 @@ class CurrentUserRBACIntegrationTest(TestCase):
         navigator_permission.object_types.add(navigator_type)
 
         permission = ObjectPermission.objects.create(
-            name="View one site",
-            actions=["view"],
+            name="View and change one site",
+            actions=["view", "change"],
             constraints={"name": cls.visible_site.name},
         )
         permission.users.add(cls.limited_user)
@@ -246,6 +246,36 @@ class CurrentUserRBACIntegrationTest(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.visible_site.refresh_from_db()
         self.assertEqual(self.visible_site.description, "Approved description")
+
+    def test_named_bulk_update_is_validated_atomically_without_writing(self):
+        proposed = self.provider.call_tool(
+            self.write_context_for(self.superuser),
+            "propose_bulk_update_named_objects",
+            {
+                "object_type": "dcim.site",
+                "object_names": [self.visible_site.name, self.hidden_site.name],
+                "data": {"status": "planned"},
+            },
+        )
+
+        self.visible_site.refresh_from_db()
+        self.hidden_site.refresh_from_db()
+        self.assertEqual(proposed["count"], 2)
+        self.assertEqual(len(proposed["pending_actions"]), 2)
+        self.assertEqual(self.visible_site.status, "active")
+        self.assertEqual(self.hidden_site.status, "active")
+
+    def test_named_bulk_update_rejects_partial_permission_match(self):
+        with self.assertRaisesMessage(ToolValidationError, "No partial batch was staged"):
+            self.provider.call_tool(
+                self.write_context_for(self.limited_user),
+                "propose_bulk_update_named_objects",
+                {
+                    "object_type": "dcim.site",
+                    "object_names": [self.visible_site.name, self.hidden_site.name],
+                    "data": {"status": "planned"},
+                },
+            )
 
     def test_navigator_write_capability_does_not_bypass_object_change_permission(self):
         self.assertTrue(user_can_write_assistant(self.navigator_only_writer))

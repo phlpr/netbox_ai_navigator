@@ -70,6 +70,31 @@ class FakeActionRuntime(FakeRuntime):
         )
 
 
+class FakeBatchActionRuntime(FakeRuntime):
+    def run(self, context, messages, page_context):
+        actions = tuple(
+            {
+                "type": "change_approval",
+                "operation": "update",
+                "method": "PATCH",
+                "endpoint": f"/api/virtualization/virtual-machines/{object_id}/",
+                "payload": {"status": "deleted"},
+                "object_type": "virtualization.virtualmachine",
+                "object_id": object_id,
+                "title": f"Update SPSQLPROD00{object_id}",
+                "target": f"SPSQLPROD00{object_id}",
+                "changes": [{"field": "status", "before": "active", "after": "deleted"}],
+                "etag": f'W/"timestamp-{object_id}"',
+            }
+            for object_id in (1, 2, 3)
+        )
+        return AgentResult(
+            answer="Three validated changes are awaiting confirmation.",
+            tool_calls=5,
+            pending_actions=actions,
+        )
+
+
 @override_settings(
     PLUGINS_CONFIG={
         "netbox_ai_navigator": {
@@ -183,6 +208,28 @@ class ChatViewTest(SimpleTestCase):
         self.assertNotIn("endpoint", payload["pending_actions"][0])
         self.assertNotIn("payload", payload["pending_actions"][0])
         self.assertNotIn("/api/dcim/sites/1/", response.content.decode())
+
+    @patch("netbox_ai_navigator.views.build_agent_runtime", return_value=FakeBatchActionRuntime())
+    def test_returns_separate_approval_cards_for_multi_object_change(self, _build_runtime):
+        request = self.factory.post(
+            "/plugins/ai-navigator/api/chat/",
+            data=json.dumps({"messages": [{"role": "user", "content": "Update three VMs"}]}),
+            content_type="application/json",
+        )
+        request.user = FakeUser(permissions=[WRITE_PERMISSION])
+        request.session = {}
+
+        response = ChatView.as_view()(request)
+        payload = json.loads(response.content)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(payload["pending_actions"]), 3)
+        self.assertEqual(
+            [action["target"] for action in payload["pending_actions"]],
+            ["SPSQLPROD001", "SPSQLPROD002", "SPSQLPROD003"],
+        )
+        self.assertEqual(len({action["action_id"] for action in payload["pending_actions"]}), 3)
+        self.assertNotIn("/api/virtualization/virtual-machines/", response.content.decode())
 
     @override_settings(
         CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "navigator-rate"}},

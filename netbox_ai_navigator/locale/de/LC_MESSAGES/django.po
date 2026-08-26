@@ -90,6 +90,21 @@ msgstr "Diese Änderung erfordert Ihre Bestätigung."
 msgid "The requested change was validated and is awaiting manual confirmation."
 msgstr "Die angeforderte Änderung wurde validiert und wartet auf manuelle Bestätigung."
 
+msgid "%(count)s requested changes were validated. Each change is awaiting separate manual confirmation."
+msgstr "%(count)s angeforderte Änderungen wurden validiert. Jede Änderung wartet auf eine separate manuelle Bestätigung."
+
+msgid "No change proposals were created because the request exceeded the limit of %(limit)s objects. Please narrow the request."
+msgstr "Es wurden keine Änderungsvorschläge erstellt, weil die Anfrage das Limit von %(limit)s Objekten überschritten hat. Bitte grenzen Sie die Anfrage ein."
+
+msgid "No validated change proposal could be created. Please verify the exact NetBox object names and requested value, then try again."
+msgstr "Es konnte kein validierter Änderungsvorschlag erstellt werden. Bitte prüfen Sie die exakten NetBox-Objektnamen und den gewünschten Wert und versuchen Sie es erneut."
+
+msgid "The current session is read-only. No NetBox change can be proposed or performed."
+msgstr "Die aktuelle Sitzung ist schreibgeschützt. Es kann keine NetBox-Änderung vorgeschlagen oder durchgeführt werden."
+
+msgid "No change proposals were created because multiple updates must be validated as one atomic batch. Please retry the complete named-object request."
+msgstr "Es wurden keine Änderungsvorschläge erstellt, weil mehrere Aktualisierungen als eine atomare Gruppe validiert werden müssen. Bitte wiederholen Sie die vollständige Anfrage mit allen Objektnamen."
+
 msgid "AI Navigator is limited to NetBox data, configuration, and workflows. Please ask a NetBox-related question."
 msgstr "AI Navigator ist auf NetBox-Daten, -Konfiguration und -Arbeitsabläufe beschränkt. Bitte stellen Sie eine NetBox-bezogene Frage."
 

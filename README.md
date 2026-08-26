@@ -116,6 +116,7 @@ PLUGINS_CONFIG = {
             "write": {
                 "enabled": True,
                 "approval_ttl": 600,
+                # Also limits multi-object update proposals per request.
                 "max_pending": 5,
             },
         },

@@ -237,6 +237,7 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
             {
                 "propose_create_object",
                 "propose_update_object",
+                "propose_bulk_update_named_objects",
                 "propose_delete_object",
             }.issubset(write_tools)
         )
