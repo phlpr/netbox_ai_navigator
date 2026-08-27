@@ -26,6 +26,8 @@ from .exceptions import (
     ProviderTimeoutError,
     UngroundedResponseError,
 )
+from .filtersets import ResponseLogFilterSet
+from .forms import ResponseLogFilterForm
 from .model_providers import MyGPTApiProvider
 from .models import RejectedResponseLog
 from .rejection_logging import record_rejected_response
@@ -51,6 +53,8 @@ MAX_REQUEST_BYTES = 256_000
 class RejectedResponseLogListView(generic.ObjectListView):
     queryset = RejectedResponseLog.objects.select_related("user")
     table = RejectedResponseLogTable
+    filterset = ResponseLogFilterSet
+    filterset_form = ResponseLogFilterForm
     actions = ()
 
 

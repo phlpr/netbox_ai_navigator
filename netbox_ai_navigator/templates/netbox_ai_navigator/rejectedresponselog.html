@@ -2,7 +2,7 @@
 {% load helpers %}
 {% load i18n %}
 
-{% block title %}{% trans "Rejected AI response" %} #{{ object.pk }}{% endblock %}
+{% block title %}{% trans "AI response log" %} #{{ object.pk }}{% endblock %}
 
 {% block content %}
   <div class="row">
@@ -19,6 +19,10 @@
             <td>
               {% if object.user %}{{ object.user|linkify }}{% else %}{{ object.username }}{% endif %}
             </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Category" %}</th>
+            <td>{{ object.get_category_display }}</td>
           </tr>
           <tr>
             <th scope="row">{% trans "Reason" %}</th>
@@ -42,8 +46,8 @@
           <pre class="mb-0 text-wrap">{{ object.user_request }}</pre>
         </div>
       </div>
-      <div class="card border-danger">
-        <h2 class="card-header text-danger">{% trans "Rejected model response" %}</h2>
+      <div class="card{% if object.category == 'rejected' %} border-danger{% endif %}">
+        <h2 class="card-header{% if object.category == 'rejected' %} text-danger{% endif %}">{% trans "Model response" %}</h2>
         <div class="card-body">
           <pre class="mb-0 text-wrap">{{ object.rejected_response }}</pre>
         </div>

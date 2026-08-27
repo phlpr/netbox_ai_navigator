@@ -4,7 +4,7 @@ from typing import Any
 from django.db.models import Q
 
 from .models import RejectedResponseLog
-from .rejections import RejectedResponse
+from .rejections import RejectedResponse, RejectionReason, ResponseLogCategory
 
 logger = logging.getLogger("netbox.plugins.netbox_ai_navigator.rejection_logging")
 
@@ -32,6 +32,11 @@ def record_rejected_response(
         entry = RejectedResponseLog.objects.create(
             user_id=user_id,
             username=username,
+            category=(
+                ResponseLogCategory.WRITE
+                if rejection.reason == RejectionReason.APPROVAL_NORMALIZATION
+                else ResponseLogCategory.REJECTED
+            ),
             user_request=_bounded_text(user_request, max_chars),
             rejected_response=_bounded_text(rejection.response, max_chars),
             delivered_response=_bounded_text(delivered_response, max_chars),

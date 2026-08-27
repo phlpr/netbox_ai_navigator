@@ -10,7 +10,7 @@ menu = PluginMenu(
             (
                 PluginMenuItem(
                     link="plugins:netbox_ai_navigator:rejectedresponselog_list",
-                    link_text=_("Rejected AI responses"),
+                    link_text=_("AI response logs"),
                     permissions=("netbox_ai_navigator.view_rejectedresponselog",),
                 ),
             ),

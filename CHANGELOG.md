@@ -4,6 +4,8 @@
 
 - Add OpenAI Responses API support and validated deployment-specific headers to the general OpenAI-compatible
   provider while retaining Chat Completions compatibility.
+- Generalize rejected-response auditing into categorized AI response logs, classify validated write proposals, and
+  add category and reason filters to the NetBox list view.
 
 ## 0.2.0 - 2026-08-27
 

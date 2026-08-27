@@ -388,6 +388,26 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertEqual(result.rejection.reason, RejectionReason.APPROVAL_NORMALIZATION)
         self.assertEqual(result.rejection.response, "The object was already updated.")
 
+    def test_pending_change_is_logged_even_when_model_matches_confirmation_answer(self):
+        confirmation = "The requested change was validated and is awaiting manual confirmation."
+        model = FakeModelProvider(
+            [
+                ModelResponse(
+                    tool_calls=[ModelToolCall("change", "propose_update_object", {"status": "active"})]
+                ),
+                ModelResponse(content=confirmation),
+            ]
+        )
+
+        result = AgentRuntime(model, FakeWriteToolProvider()).run(
+            self.context,
+            [{"role": "user", "content": "Set the status to active."}],
+        )
+
+        self.assertEqual(result.answer, confirmation)
+        self.assertEqual(result.rejection.reason, RejectionReason.APPROVAL_NORMALIZATION)
+        self.assertEqual(result.rejection.response, confirmation)
+
     def test_rejects_non_atomic_series_of_single_object_proposals(self):
         model = FakeModelProvider(
             [

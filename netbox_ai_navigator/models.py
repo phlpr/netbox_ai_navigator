@@ -4,7 +4,7 @@ from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from utilities.querysets import RestrictedQuerySet
 
-from .rejections import RejectionReason
+from .rejections import RejectionReason, ResponseLogCategory
 
 
 class AINavigator(models.Model):
@@ -33,8 +33,15 @@ class RejectedResponseLog(models.Model):
         verbose_name=_("User"),
     )
     username = models.CharField(max_length=255, verbose_name=_("Username"))
+    category = models.CharField(
+        max_length=16,
+        choices=ResponseLogCategory.choices,
+        default=ResponseLogCategory.REJECTED,
+        db_index=True,
+        verbose_name=_("Category"),
+    )
     user_request = models.TextField(verbose_name=_("Last request"))
-    rejected_response = models.TextField(verbose_name=_("Rejected model response"))
+    rejected_response = models.TextField(verbose_name=_("Model response"))
     delivered_response = models.TextField(verbose_name=_("Delivered response"))
     reason = models.CharField(max_length=32, choices=RejectionReason.choices, verbose_name=_("Reason"))
     provider = models.CharField(max_length=50, blank=True, verbose_name=_("Model provider"))
@@ -44,11 +51,11 @@ class RejectedResponseLog(models.Model):
     class Meta:
         ordering = ("-created", "-pk")
         default_permissions = ("view",)
-        verbose_name = _("rejected AI response")
-        verbose_name_plural = _("rejected AI responses")
+        verbose_name = _("AI response log")
+        verbose_name_plural = _("AI response logs")
 
     def __str__(self) -> str:
-        return f"{self.username} · {self.get_reason_display()} · {self.created:%Y-%m-%d %H:%M:%S}"
+        return f"{self.username} · {self.get_category_display()} · {self.created:%Y-%m-%d %H:%M:%S}"
 
     def get_absolute_url(self) -> str:
         return reverse("plugins:netbox_ai_navigator:rejectedresponselog", args=[self.pk])

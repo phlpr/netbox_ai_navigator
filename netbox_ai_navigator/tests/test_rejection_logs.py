@@ -11,7 +11,7 @@ from netbox_ai_navigator.agent import AgentResult, RejectedResponse
 from netbox_ai_navigator.exceptions import UngroundedResponseError
 from netbox_ai_navigator.models import RejectedResponseLog
 from netbox_ai_navigator.rejection_logging import record_rejected_response
-from netbox_ai_navigator.rejections import RejectionReason
+from netbox_ai_navigator.rejections import RejectionReason, ResponseLogCategory
 from netbox_ai_navigator.views import ChatView
 
 
@@ -86,6 +86,7 @@ class RejectedResponseLogTest(TestCase):
         self.assertEqual(entry.user_request, "How do I sort a Python list?")
         self.assertEqual(entry.rejected_response, "Use list.sort() to sort the Python list.")
         self.assertEqual(entry.delivered_response, "AI Navigator is limited to NetBox data.")
+        self.assertEqual(entry.category, ResponseLogCategory.REJECTED)
         self.assertEqual(entry.reason, RejectionReason.SCOPE_GUARD)
         self.assertEqual(entry.provider, "openai_compatible")
         self.assertEqual(entry.model_name, "test-model")
@@ -106,7 +107,27 @@ class RejectedResponseLogTest(TestCase):
         self.assertEqual(entry.user_request, "Show Device01")
         self.assertEqual(entry.rejected_response, "Device01 has the invented address 192.0.2.10.")
         self.assertEqual(entry.delivered_response, "The model response could not be verified.")
+        self.assertEqual(entry.category, ResponseLogCategory.REJECTED)
         self.assertEqual(entry.reason, RejectionReason.GROUNDING_GUARD)
+
+    def test_validated_change_is_categorized_as_write(self):
+        entry = record_rejected_response(
+            user=self.superuser,
+            user_request="Set Device01 to planned",
+            rejection=RejectedResponse(
+                reason=RejectionReason.APPROVAL_NORMALIZATION,
+                response="The change is ready for approval.",
+            ),
+            delivered_response="The requested change was validated and is awaiting manual confirmation.",
+            plugin_settings={
+                "model": {"provider": "openai_compatible", "model": "test-model"},
+                "rejected_response_logs": {"enabled": True, "max_entries": 1000},
+            },
+        )
+
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.category, ResponseLogCategory.WRITE)
+        self.assertEqual(entry.get_reason_display(), "Change proposal validated")
 
     def test_retention_keeps_only_configured_number_of_entries(self):
         settings = {
@@ -185,3 +206,36 @@ class RejectedResponseLogTest(TestCase):
         self.assertNotIn('<script id="request-xss">', content)
         self.assertNotIn('<img src=x onerror="alert(2)">', content)
         self.assertIn("&lt;script", content)
+
+    def test_list_can_filter_response_logs_by_category(self):
+        rejected = RejectedResponseLog.objects.create(
+            user=self.superuser,
+            username=self.superuser.username,
+            category=ResponseLogCategory.REJECTED,
+            user_request="Unrelated request",
+            rejected_response="Rejected",
+            delivered_response="Safe response",
+            reason=RejectionReason.SCOPE_GUARD,
+        )
+        write = RejectedResponseLog.objects.create(
+            user=self.superuser,
+            username=self.superuser.username,
+            category=ResponseLogCategory.WRITE,
+            user_request="Update Device01",
+            rejected_response="Ready for approval",
+            delivered_response="Validated",
+            reason=RejectionReason.APPROVAL_NORMALIZATION,
+        )
+        self.client.force_login(self.superuser)
+
+        response = self.client.get(
+            reverse("plugins:netbox_ai_navigator:rejectedresponselog_list"),
+            {"category": ResponseLogCategory.WRITE},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        records = list(response.context["table"].data)
+        self.assertEqual([record.pk for record in records], [write.pk])
+        self.assertNotEqual(records[0].pk, rejected.pk)
+        self.assertIn("category", response.context["filter_form"].fields)
+        self.assertIn("reason", response.context["filter_form"].fields)

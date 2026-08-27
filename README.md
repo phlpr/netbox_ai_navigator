@@ -25,7 +25,7 @@ Version 0.2 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It pro
 - dynamic discovery of supported NetBox core and plugin models, fields, and filters;
 - non-configurable credential guards plus optional administrator exclusions;
 - session-scoped conversation history without persisting normal chat messages in the NetBox database;
-- a permission-protected audit log for final model responses rejected by Navigator safety controls.
+- a permission-protected, categorized audit log for rejected responses and validated write proposals.
 
 The OpenAI-compatible provider requires native tool calling and supports both the Chat Completions and Responses tool
 protocols. The Custom API Connector adapts a deployment-specific backend to the same internal agent contract.
@@ -170,7 +170,7 @@ python /opt/netbox/netbox/manage.py collectstatic --no-input
 sudo systemctl restart netbox netbox-rq
 ```
 
-The migrations register the permission-only `AI Navigator` object type and create the rejected-response log table.
+The migrations register the permission-only `AI Navigator` object type and create the AI response log table.
 The permission anchor remains unmanaged and stores no rows.
 
 ### Custom API Connector
@@ -218,11 +218,12 @@ history is stored under a random, NetBox-session-specific browser key so it surv
 Resetting the conversation or starting a new login clears the visible history.
 
 When `rejected_response_logs.enabled=True`, a final model response replaced or rejected by a Navigator safety control
-is stored separately with the last user request, user, rejection reason, provider/model identifiers, raw rejected
-response, and the safe response returned to the browser. Raw tool results and provider credentials are not added to
-this record. Text is bounded by `model.max_response_chars`, and only the newest
-`rejected_response_logs.max_entries` records are retained. These records can contain NetBox data and should be treated
-as sensitive audit data. Set `rejected_response_logs.enabled=False` if they must not be persisted.
+is stored separately with the last user request, user, reason, provider/model identifiers, original model response,
+and the safe response returned to the browser. Validated write proposals are stored in the same audit log under the
+`write` category; safety rejections use `rejected`. The list view can filter both category and reason. Raw tool results
+and provider credentials are not added to these records. Text is bounded by `model.max_response_chars`, and only the
+newest `rejected_response_logs.max_entries` records are retained. These records can contain NetBox data and should be
+treated as sensitive audit data. Set `rejected_response_logs.enabled=False` if they must not be persisted.
 
 Remote provider URLs require HTTPS. Loopback HTTP endpoints are accepted for local runtimes; other HTTP endpoints need
 the explicit `model.allow_insecure_http=True` opt-in. Provider redirects are not followed, response bodies are bounded,
@@ -241,8 +242,8 @@ Assign either action directly to users or to groups. A user with neither action 
 403 from the chat and reset endpoints. `enabled=False` remains a global kill switch and overrides both capabilities.
 Normal NetBox object permissions continue to determine which individual objects the read tools may return.
 
-Rejected responses use their own `Rejected AI response` object type. Superusers can open the log from the AI
-Navigator menu automatically. For a non-superuser administrator, grant only the `view` action for this object type
+AI response logs use their own `AI response log` object type. Superusers can open the log from the AI Navigator menu
+automatically. For a non-superuser administrator, grant only the `view` action for this object type
 through **Admin → Object Permissions**. The log model exposes no add, change, or delete UI actions and is not available
 to the model's dynamic NetBox tools because it has no REST serializer or FilterSet.
 

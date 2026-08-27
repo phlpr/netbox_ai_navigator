@@ -499,7 +499,14 @@ class AgentRuntime:
             suffix = "\n\n[Response truncated by NetBox AI Navigator.]"
             answer = answer[: max(0, self.max_response_chars - len(suffix))] + suffix
         rejection = None
-        if rejection_reason and rejected_response.strip() and rejected_response != answer:
+        if (
+            rejection_reason
+            and rejected_response.strip()
+            and (
+                rejection_reason == RejectionReason.APPROVAL_NORMALIZATION
+                or rejected_response != answer
+            )
+        ):
             rejection = RejectedResponse(reason=rejection_reason, response=rejected_response)
         return AgentResult(
             answer=answer,

@@ -183,17 +183,11 @@ msgstr "Nein"
 msgid "Administration"
 msgstr "Administration"
 
-msgid "Rejected AI responses"
-msgstr "Abgelehnte KI-Antworten"
+msgid "AI response logs"
+msgstr "KI-Antwortprotokolle"
 
-msgid "rejected AI responses"
-msgstr "abgelehnte KI-Antworten"
-
-msgid "Rejected AI response"
-msgstr "Abgelehnte KI-Antwort"
-
-msgid "rejected AI response"
-msgstr "abgelehnte KI-Antwort"
+msgid "AI response log"
+msgstr "KI-Antwortprotokoll"
 
 msgid "Metadata"
 msgstr "Metadaten"
@@ -210,14 +204,26 @@ msgstr "Erstellt"
 msgid "Last request"
 msgstr "Letzte Anfrage"
 
-msgid "Rejected model response"
-msgstr "Abgelehnte Modellantwort"
+msgid "Model response"
+msgstr "Modellantwort"
 
 msgid "Delivered response"
 msgstr "Ausgelieferte Antwort"
 
 msgid "Reason"
 msgstr "Grund"
+
+msgid "Category"
+msgstr "Kategorie"
+
+msgid "Rejected"
+msgstr "Abgelehnt"
+
+msgid "Write operation"
+msgstr "Schreibvorgang"
+
+msgid "Attributes"
+msgstr "Attribute"
 
 msgid "Model provider"
 msgstr "Modellanbieter"
@@ -231,8 +237,8 @@ msgstr "Außerhalb des NetBox-Bereichs"
 msgid "Change response was not validated"
 msgstr "Änderungsantwort wurde nicht validiert"
 
-msgid "Change approval response was replaced"
-msgstr "Antwort zur Änderungsbestätigung wurde ersetzt"
+msgid "Change proposal validated"
+msgstr "Änderungsvorschlag validiert"
 
 msgid "Unsafe change proposal response"
 msgstr "Unsichere Antwort zu einem Änderungsvorschlag"
