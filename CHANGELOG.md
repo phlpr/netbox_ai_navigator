@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-08-27
+
 - Add OpenAI Responses API support and validated deployment-specific headers to the general OpenAI-compatible
   provider while retaining Chat Completions compatibility.
 - Remove the legacy provider integration and its server-side session lifecycle.
