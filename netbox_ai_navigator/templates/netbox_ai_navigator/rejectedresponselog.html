@@ -1,0 +1,59 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block title %}{% trans "Rejected AI response" %} #{{ object.pk }}{% endblock %}
+
+{% block content %}
+  <div class="row">
+    <div class="col-12 col-xl-4">
+      <div class="card">
+        <h2 class="card-header">{% trans "Metadata" %}</h2>
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Created" %}</th>
+            <td>{{ object.created|isodatetime:"seconds" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "User" %}</th>
+            <td>
+              {% if object.user %}{{ object.user|linkify }}{% else %}{{ object.username }}{% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Reason" %}</th>
+            <td>{{ object.get_reason_display }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Model provider" %}</th>
+            <td>{{ object.provider|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Model name" %}</th>
+            <td>{{ object.model_name|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="col-12 col-xl-8">
+      <div class="card">
+        <h2 class="card-header">{% trans "Last request" %}</h2>
+        <div class="card-body">
+          <pre class="mb-0 text-wrap">{{ object.user_request }}</pre>
+        </div>
+      </div>
+      <div class="card border-danger">
+        <h2 class="card-header text-danger">{% trans "Rejected model response" %}</h2>
+        <div class="card-body">
+          <pre class="mb-0 text-wrap">{{ object.rejected_response }}</pre>
+        </div>
+      </div>
+      <div class="card">
+        <h2 class="card-header">{% trans "Delivered response" %}</h2>
+        <div class="card-body">
+          <pre class="mb-0 text-wrap">{{ object.delivered_response }}</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

@@ -2,8 +2,12 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-08-27
+
 - Validate small multi-object updates atomically and require a separate browser confirmation for every object.
 - Add a server-side `has_contact` filter for contact-capable objects and report whether query results are truncated.
+- Add a dedicated, permission-protected model for rejected AI responses with bounded retention, localized list and
+  detail views, and audit fields for the user, request, rejected response, delivered response, reason, and model.
 
 ## 0.1.0 - 2026-08-25
 

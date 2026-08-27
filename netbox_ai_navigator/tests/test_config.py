@@ -53,3 +53,10 @@ class DynamicToolConfigurationTest(SimpleTestCase):
     def test_rate_limit_is_bounded(self):
         with self.assertRaises(ImproperlyConfigured):
             validate_plugin_settings({"agent": {"requests_per_minute": 601}})
+
+    def test_rejected_response_log_settings_are_validated(self):
+        validate_plugin_settings({"rejected_response_logs": {"enabled": True, "max_entries": 250}})
+        with self.assertRaises(ImproperlyConfigured):
+            validate_plugin_settings({"rejected_response_logs": {"enabled": "yes"}})
+        with self.assertRaises(ImproperlyConfigured):
+            validate_plugin_settings({"rejected_response_logs": {"max_entries": 100_001}})

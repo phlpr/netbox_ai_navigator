@@ -10,7 +10,7 @@ separate two-phase approval workflow and are never executed directly by the mode
 
 ## Status
 
-Version 0.1 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It provides:
+Version 0.2 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It provides:
 
 - a localized, resizable global chat window with context from the currently visible NetBox page;
 - an OpenAI Chat Completions provider and a deployment-specific Custom API Connector with function/tool calling;
@@ -24,7 +24,8 @@ Version 0.1 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It pro
 - dedicated `use_read` and future-ready `use_write` AI Navigator capabilities assignable to NetBox users or groups;
 - dynamic discovery of supported NetBox core and plugin models, fields, and filters;
 - non-configurable credential guards plus optional administrator exclusions;
-- session-scoped conversation history without storing chat data in the NetBox database.
+- session-scoped conversation history without persisting normal chat messages in the NetBox database;
+- a permission-protected audit log for final model responses rejected by Navigator safety controls.
 
 The OpenAI-compatible provider requires native tool calling. The Custom API Connector adapts a deployment-specific
 backend to the same internal agent contract.
@@ -33,6 +34,7 @@ backend to the same internal agent contract.
 
 | Plugin Release | NetBox | Python |
 |---|---|---|
+| `0.2.x` | `4.5.10` to `4.6.x` (tested with `4.5.10` and `4.6.8`; CI uses `4.6.9`) | `3.12`, `3.13`, `3.14` |
 | `0.1.x` | `4.5.10` to `4.6.x` (tested with `4.5.10` and `4.6.8`; CI uses `4.6.9`) | `3.12`, `3.13`, `3.14` |
 
 ## Architecture
@@ -126,11 +128,16 @@ PLUGINS_CONFIG = {
             "max_message_chars": 12000,
             "requests_per_minute": 20,
         },
+        "rejected_response_logs": {
+            "enabled": True,
+            # The oldest entries are removed after this limit is exceeded.
+            "max_entries": 1000,
+        },
     }
 }
 ```
 
-Apply the permission migration, collect static assets, and restart NetBox:
+Apply the database migrations, collect static assets, and restart NetBox:
 
 ```bash
 python /opt/netbox/netbox/manage.py migrate
@@ -138,7 +145,8 @@ python /opt/netbox/netbox/manage.py collectstatic --no-input
 sudo systemctl restart netbox netbox-rq
 ```
 
-The migration registers the permission-only `AI Navigator` object type. The model is unmanaged and stores no rows.
+The migrations register the permission-only `AI Navigator` object type and create the rejected-response log table.
+The permission anchor remains unmanaged and stores no rows.
 
 ### Custom API Connector
 
@@ -179,10 +187,17 @@ For object lookup, RBAC restriction is applied before the primary-key filter. An
 identical to a nonexistent object. The browser never receives the configured provider credentials, and neither the
 NetBox session nor CSRF token is sent to the model provider.
 
-Request prompts, tool results, and model answers are not logged by the plugin. Technical metadata such as username,
-duration, model name, tool count, and status is logged. Chat history is stored under a random, NetBox-session-specific
-browser key so it survives page navigation and reloads. Resetting the conversation or starting a new login clears the
-visible history.
+Normal request prompts, tool results, and accepted model answers are not persisted by the plugin. Technical metadata
+such as username, duration, model name, tool count, and status is written to the configured application log. Chat
+history is stored under a random, NetBox-session-specific browser key so it survives page navigation and reloads.
+Resetting the conversation or starting a new login clears the visible history.
+
+When `rejected_response_logs.enabled=True`, a final model response replaced or rejected by a Navigator safety control
+is stored separately with the last user request, user, rejection reason, provider/model identifiers, raw rejected
+response, and the safe response returned to the browser. Raw tool results and provider credentials are not added to
+this record. Text is bounded by `model.max_response_chars`, and only the newest
+`rejected_response_logs.max_entries` records are retained. These records can contain NetBox data and should be treated
+as sensitive audit data. Set `rejected_response_logs.enabled=False` if they must not be persisted.
 
 Remote provider URLs require HTTPS. Loopback HTTP endpoints are accepted for local runtimes; other HTTP endpoints need
 the explicit `model.allow_insecure_http=True` opt-in. Provider redirects are not followed, response bodies are bounded,
@@ -201,12 +216,17 @@ Assign either action directly to users or to groups. A user with neither action 
 403 from the chat and reset endpoints. `enabled=False` remains a global kill switch and overrides both capabilities.
 Normal NetBox object permissions continue to determine which individual objects the read tools may return.
 
+Rejected responses use their own `Rejected AI response` object type. Superusers can open the log from the AI
+Navigator menu automatically. For a non-superuser administrator, grant only the `view` action for this object type
+through **Admin → Object Permissions**. The log model exposes no add, change, or delete UI actions and is not available
+to the model's dynamic NetBox tools because it has no REST serializer or FilterSet.
+
 ### Confirmed changes
 
-The model can stage at most one change per assistant request. A proposal is validated with the model's registered
-NetBox REST serializer, but no object is saved. The exact before/after preview is stored server-side in the current
-session and displayed with Confirm and Cancel controls. Approval tokens are single-use and expire after ten minutes by
-default.
+The model can stage one change or an atomic group of exact named-object updates per assistant request, up to
+`tools.write.max_pending`. A proposal is validated with the model's registered NetBox REST serializer, but no object is
+saved. The exact before/after preview is stored server-side in the current session and displayed with Confirm and
+Cancel controls. Approval tokens are single-use and expire after ten minutes by default.
 
 After confirmation, the plugin locks the target object and rechecks its ETag before dispatching the stored action
 through the registered NetBox REST ViewSet. NetBox then rechecks the current user's normal object permissions,

@@ -12,13 +12,24 @@ from django.urls import resolve
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.cache import never_cache
+from netbox.views import generic
 from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory, force_authenticate
+from utilities.views import register_model_view
 
 from .agent import build_agent_runtime
 from .config import get_plugin_settings, user_can_read_assistant, user_can_write_assistant
-from .exceptions import AgentLimitError, InvalidRequestError, ProviderError, ProviderTimeoutError
+from .exceptions import (
+    AgentLimitError,
+    InvalidRequestError,
+    ProviderError,
+    ProviderTimeoutError,
+    UngroundedResponseError,
+)
 from .model_providers import MyGPTApiProvider
+from .models import RejectedResponseLog
+from .rejection_logging import record_rejected_response
+from .rejections import RejectedResponse, RejectionReason
 from .session_state import (
     clear_mygpt_conversation_id,
     clear_pending_actions,
@@ -28,11 +39,26 @@ from .session_state import (
     set_mygpt_conversation_id,
     store_pending_action,
 )
+from .tables import RejectedResponseLogTable
 from .tool_providers import ToolContext
 
 logger = logging.getLogger("netbox.plugins.netbox_ai_navigator.views")
 
 MAX_REQUEST_BYTES = 256_000
+
+
+@register_model_view(RejectedResponseLog, "list", path="", detail=False)
+class RejectedResponseLogListView(generic.ObjectListView):
+    queryset = RejectedResponseLog.objects.select_related("user")
+    table = RejectedResponseLogTable
+    actions = ()
+
+
+@register_model_view(RejectedResponseLog)
+class RejectedResponseLogView(generic.ObjectView):
+    queryset = RejectedResponseLog.objects.select_related("user")
+    template_name = "netbox_ai_navigator/rejectedresponselog.html"
+    actions = ()
 
 
 @method_decorator(never_cache, name="dispatch")
@@ -49,6 +75,7 @@ class ChatView(View):
         status = "error"
         tool_calls = 0
         runtime = None
+        latest_user_request = ""
         plugin_settings = get_plugin_settings()
         model_name = str(plugin_settings["model"].get("model", ""))
 
@@ -74,6 +101,8 @@ class ChatView(View):
             payload = json.loads(body)
             if not isinstance(payload, dict):
                 raise InvalidRequestError("The request body must be a JSON object.")
+            history = payload.get("messages")
+            latest_user_request = self._latest_user_request(history)
             page_context = self._sanitize_page_context(payload.get("page_context"))
             can_write = user_can_write_assistant(request.user, plugin_settings)
             context = ToolContext(
@@ -87,8 +116,16 @@ class ChatView(View):
                 plugin_settings,
                 conversation_id=get_mygpt_conversation_id(request),
             )
-            result = runtime.run(context, payload.get("messages"), page_context)
+            result = runtime.run(context, history, page_context)
             tool_calls = result.tool_calls
+            if result.rejection is not None:
+                record_rejected_response(
+                    user=request.user,
+                    user_request=latest_user_request,
+                    rejection=result.rejection,
+                    delivered_response=result.answer,
+                    plugin_settings=plugin_settings,
+                )
             write_config = plugin_settings["tools"].get("write") or {}
             pending_actions = [
                 store_pending_action(
@@ -119,6 +156,20 @@ class ChatView(View):
             return self._json_error(str(exc), status=422)
         except ProviderTimeoutError as exc:
             return self._json_error(str(exc), status=504)
+        except UngroundedResponseError as exc:
+            status = "rejected"
+            if exc.rejected_response:
+                record_rejected_response(
+                    user=request.user,
+                    user_request=latest_user_request,
+                    rejection=RejectedResponse(
+                        reason=RejectionReason.GROUNDING_GUARD,
+                        response=exc.rejected_response,
+                    ),
+                    delivered_response=str(exc),
+                    plugin_settings=plugin_settings,
+                )
+            return self._json_error(str(exc), status=502)
         except ProviderError as exc:
             return self._json_error(str(exc), status=502)
         except Exception:
@@ -142,6 +193,15 @@ class ChatView(View):
         provider = getattr(runtime, "model_provider", None)
         if isinstance(provider, MyGPTApiProvider) and provider.conversation_id:
             set_mygpt_conversation_id(request, provider.conversation_id)
+
+    @staticmethod
+    def _latest_user_request(history: Any) -> str:
+        if not isinstance(history, list):
+            return ""
+        for message in reversed(history):
+            if isinstance(message, dict) and message.get("role") == "user" and isinstance(message.get("content"), str):
+                return message["content"]
+        return ""
 
     @staticmethod
     def _sanitize_page_context(value: Any) -> dict[str, Any]:

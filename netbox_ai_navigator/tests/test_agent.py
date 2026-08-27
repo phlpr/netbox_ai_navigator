@@ -7,6 +7,7 @@ from django.utils.translation import override
 from netbox_ai_navigator.agent.runtime import AgentRuntime
 from netbox_ai_navigator.exceptions import AgentLimitError, ToolNotFoundError, UngroundedResponseError
 from netbox_ai_navigator.model_providers import ModelResponse, ModelToolCall
+from netbox_ai_navigator.rejections import RejectionReason
 from netbox_ai_navigator.tool_providers import ToolContext, ToolDefinition, ToolProvider
 
 
@@ -324,6 +325,8 @@ class AgentRuntimeTest(SimpleTestCase):
             "Please ask a NetBox-related question.",
         )
         self.assertEqual(result.tool_calls, 0)
+        self.assertEqual(result.rejection.reason, RejectionReason.SCOPE_GUARD)
+        self.assertEqual(result.rejection.response, "Use list.sort() or sorted() to sort a Python list.")
 
     def test_translates_out_of_scope_answer(self):
         model = FakeModelProvider([ModelResponse(content="Verwende list.sort().")])
@@ -382,6 +385,8 @@ class AgentRuntimeTest(SimpleTestCase):
             "The requested change was validated and is awaiting manual confirmation.",
         )
         self.assertEqual(len(result.pending_actions), 1)
+        self.assertEqual(result.rejection.reason, RejectionReason.APPROVAL_NORMALIZATION)
+        self.assertEqual(result.rejection.response, "The object was already updated.")
 
     def test_rejects_non_atomic_series_of_single_object_proposals(self):
         model = FakeModelProvider(
@@ -411,6 +416,7 @@ class AgentRuntimeTest(SimpleTestCase):
             "Please retry the complete named-object request.",
         )
         self.assertEqual(result.pending_actions, ())
+        self.assertEqual(result.rejection.reason, RejectionReason.PROPOSAL_GUARD)
 
     def test_requires_atomic_bulk_tool_for_compact_numeric_update_range(self):
         names = ["SPSQLPROD001", "SPSQLPROD002", "SPSQLPROD003"]
@@ -881,6 +887,8 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertIn("[gv-graz-access-01](/dcim/devices/4/)", result.answer)
         self.assertIn("| Device | Role | Site | Location | Status |", result.answer)
         self.assertNotIn("192.168.1.10", result.answer)
+        self.assertEqual(result.rejection.reason, RejectionReason.GROUNDING_GUARD)
+        self.assertEqual(result.rejection.response, answer)
 
     def test_translates_grounded_fallback_table(self):
         answer = """| Device | Status |

@@ -57,6 +57,10 @@ DEFAULT_SETTINGS = {
         "max_message_chars": 12000,
         "requests_per_minute": 20,
     },
+    "rejected_response_logs": {
+        "enabled": True,
+        "max_entries": 1000,
+    },
 }
 
 
@@ -164,6 +168,17 @@ def validate_plugin_settings(configured: dict[str, Any]) -> None:
         "agent.requests_per_minute",
         integer=True,
         maximum=600,
+    )
+
+    rejected_response_logs = config.get("rejected_response_logs")
+    if not isinstance(rejected_response_logs, dict) or not isinstance(rejected_response_logs.get("enabled"), bool):
+        raise ImproperlyConfigured("netbox_ai_navigator.rejected_response_logs.enabled must be a boolean.")
+    _require_positive_number(
+        rejected_response_logs,
+        "max_entries",
+        "rejected_response_logs.max_entries",
+        integer=True,
+        maximum=100_000,
     )
 
 

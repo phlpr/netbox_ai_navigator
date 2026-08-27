@@ -1,6 +1,6 @@
 msgid ""
 msgstr ""
-"Project-Id-Version: netbox-ai-navigator 0.1.0\n"
+"Project-Id-Version: netbox-ai-navigator 0.2.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-08-22 00:00+0200\n"
 "PO-Revision-Date: 2026-08-22 00:00+0200\n"
@@ -179,6 +179,66 @@ msgstr "Ja"
 
 msgid "No"
 msgstr "Nein"
+
+msgid "Administration"
+msgstr "Administration"
+
+msgid "Rejected AI responses"
+msgstr "Abgelehnte KI-Antworten"
+
+msgid "rejected AI responses"
+msgstr "abgelehnte KI-Antworten"
+
+msgid "Rejected AI response"
+msgstr "Abgelehnte KI-Antwort"
+
+msgid "rejected AI response"
+msgstr "abgelehnte KI-Antwort"
+
+msgid "Metadata"
+msgstr "Metadaten"
+
+msgid "User"
+msgstr "Benutzer"
+
+msgid "Username"
+msgstr "Benutzername"
+
+msgid "Created"
+msgstr "Erstellt"
+
+msgid "Last request"
+msgstr "Letzte Anfrage"
+
+msgid "Rejected model response"
+msgstr "Abgelehnte Modellantwort"
+
+msgid "Delivered response"
+msgstr "Ausgelieferte Antwort"
+
+msgid "Reason"
+msgstr "Grund"
+
+msgid "Model provider"
+msgstr "Modellanbieter"
+
+msgid "Model name"
+msgstr "Modellname"
+
+msgid "Outside NetBox scope"
+msgstr "Außerhalb des NetBox-Bereichs"
+
+msgid "Change response was not validated"
+msgstr "Änderungsantwort wurde nicht validiert"
+
+msgid "Change approval response was replaced"
+msgstr "Antwort zur Änderungsbestätigung wurde ersetzt"
+
+msgid "Unsafe change proposal response"
+msgstr "Unsichere Antwort zu einem Änderungsvorschlag"
+
+msgid "Response could not be grounded in NetBox data"
+msgstr "Antwort konnte nicht mit NetBox-Daten belegt werden"
 
 msgid "Region"
 msgstr "Region"

@@ -15,6 +15,7 @@ from netbox_ai_navigator.exceptions import (
     UngroundedResponseError,
 )
 from netbox_ai_navigator.model_providers import ModelProvider, MyGPTApiProvider, OpenAICompatibleProvider
+from netbox_ai_navigator.rejections import RejectedResponse, RejectionReason
 from netbox_ai_navigator.tool_providers import LocalCurrentUserProvider, ToolContext, ToolProvider
 
 from .prompts import SYSTEM_PROMPT
@@ -121,6 +122,7 @@ class AgentResult:
     tool_calls: int
     client_actions: tuple[dict[str, Any], ...] = ()
     pending_actions: tuple[dict[str, Any], ...] = ()
+    rejection: RejectedResponse | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,17 +424,22 @@ class AgentRuntime:
             response = self.model_provider.complete(messages, model_tools)
 
         answer = response.content or ""
+        rejected_response = answer
+        rejection_reason: str | None = None
         if non_atomic_batch_rejected:
+            rejection_reason = RejectionReason.PROPOSAL_GUARD
             answer = _(
                 "No change proposals were created because multiple updates must be validated as one atomic batch. "
                 "Please retry the complete named-object request."
             )
         elif proposal_limit_exceeded:
+            rejection_reason = RejectionReason.PROPOSAL_GUARD
             answer = _(
                 "No change proposals were created because the request exceeded the limit of %(limit)s objects. "
                 "Please narrow the request."
             ) % {"limit": self.max_pending_actions}
         elif pending_actions:
+            rejection_reason = RejectionReason.APPROVAL_NORMALIZATION
             if len(pending_actions) == 1:
                 answer = _("The requested change was validated and is awaiting manual confirmation.")
             else:
@@ -444,6 +451,7 @@ class AgentRuntime:
             raise InvalidRequestError("The model did not return a final answer.")
         elif not successful_tool_calls and not self._answer_references_netbox_data(answer):
             if self._looks_like_change_request(normalized_history[-1]["content"]):
+                rejection_reason = RejectionReason.CHANGE_GUARD
                 if write_proposals_available:
                     answer = _(
                         "No validated change proposal could be created. Please verify the exact NetBox object "
@@ -452,11 +460,13 @@ class AgentRuntime:
                 else:
                     answer = _("The current session is read-only. No NetBox change can be proposed or performed.")
             else:
+                rejection_reason = RejectionReason.SCOPE_GUARD
                 answer = _(
                     "AI Navigator is limited to NetBox data, configuration, and workflows. "
                     "Please ask a NetBox-related question."
                 )
         elif force_grounded_fallback:
+            rejection_reason = RejectionReason.GROUNDING_GUARD
             logger.info(
                 "Returning deterministic fallback after automatic search hydration",
                 extra={"grounding_records": len(grounding_records)},
@@ -472,20 +482,31 @@ class AgentRuntime:
                 )
             except UngroundedResponseError:
                 if not grounding_records:
-                    raise
+                    raise UngroundedResponseError(
+                        _(
+                            "The model response could not be verified against NetBox data. "
+                            "Please retry or refine the request."
+                        ),
+                        rejected_response=answer,
+                    ) from None
                 logger.info(
                     "Returning deterministic fallback for ungrounded model response",
                     extra={"grounding_records": len(grounding_records)},
                 )
+                rejection_reason = RejectionReason.GROUNDING_GUARD
                 answer = self._grounded_fallback(grounding_records)
         if len(answer) > self.max_response_chars:
             suffix = "\n\n[Response truncated by NetBox AI Navigator.]"
             answer = answer[: max(0, self.max_response_chars - len(suffix))] + suffix
+        rejection = None
+        if rejection_reason and rejected_response.strip() and rejected_response != answer:
+            rejection = RejectedResponse(reason=rejection_reason, response=rejected_response)
         return AgentResult(
             answer=answer,
             tool_calls=tool_call_count,
             client_actions=tuple(client_actions),
             pending_actions=tuple(pending_actions),
+            rejection=rejection,
         )
 
     @classmethod
