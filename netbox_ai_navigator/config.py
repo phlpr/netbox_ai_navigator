@@ -16,16 +16,10 @@ DEFAULT_SETTINGS = {
         "provider": "openai_compatible",
         "protocol": "chat_completions",
         "base_url": "http://localhost:11434/v1",
-        "api_url": "https://api.myg.pt/api/v1/",
         "api_key": None,
         "extra_headers": {},
         "allow_insecure_http": False,
         "model": "qwen3",
-        "tenant": None,
-        "service_user": None,
-        "service_password": None,
-        "channel_id": None,
-        "delete_conversations": True,
         "timeout": 60,
         "temperature": 0.1,
         "max_tokens": 1200,
@@ -88,29 +82,17 @@ def validate_plugin_settings(configured: dict[str, Any]) -> None:
 
     model = config["model"]
     model_provider = model.get("provider")
-    if model_provider not in {"openai_compatible", "mygpt_api"}:
-        raise ImproperlyConfigured("netbox_ai_navigator.model.provider must be openai_compatible or mygpt_api.")
-    if model_provider == "openai_compatible" and (
-        not isinstance(model.get("base_url"), str) or not model["base_url"].strip()
-    ):
+    if model_provider != "openai_compatible":
+        raise ImproperlyConfigured("netbox_ai_navigator.model.provider must be openai_compatible.")
+    if not isinstance(model.get("base_url"), str) or not model["base_url"].strip():
         raise ImproperlyConfigured("netbox_ai_navigator.model.base_url must be configured.")
-    if model_provider == "openai_compatible" and model.get("protocol") not in {"chat_completions", "responses"}:
+    if model.get("protocol") not in {"chat_completions", "responses"}:
         raise ImproperlyConfigured(
             "netbox_ai_navigator.model.protocol must be chat_completions or responses."
         )
     if not isinstance(model.get("allow_insecure_http"), bool):
         raise ImproperlyConfigured("netbox_ai_navigator.model.allow_insecure_http must be a boolean.")
-    provider_url_key = "base_url" if model_provider == "openai_compatible" else "api_url"
-    _validate_provider_url(model.get(provider_url_key), provider_url_key, model["allow_insecure_http"])
-    if model_provider == "mygpt_api":
-        for key in ("api_url", "tenant", "channel_id"):
-            if not isinstance(model.get(key), str) or not model[key].strip():
-                raise ImproperlyConfigured(f"netbox_ai_navigator.model.{key} must be configured.")
-        for key in ("service_user", "service_password"):
-            if model.get(key) is not None and (not isinstance(model[key], str) or not model[key]):
-                raise ImproperlyConfigured(f"netbox_ai_navigator.model.{key} must be a non-empty string or null.")
-        if model.get("delete_conversations") is not True:
-            raise ImproperlyConfigured("netbox_ai_navigator.model.delete_conversations must enable session cleanup.")
+    _validate_provider_url(model.get("base_url"), "base_url", model["allow_insecure_http"])
     if model.get("api_key") is not None and not isinstance(model["api_key"], str):
         raise ImproperlyConfigured("netbox_ai_navigator.model.api_key must be a string or null.")
     try:

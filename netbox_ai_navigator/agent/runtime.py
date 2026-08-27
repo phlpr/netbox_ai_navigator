@@ -14,7 +14,7 @@ from netbox_ai_navigator.exceptions import (
     ToolError,
     UngroundedResponseError,
 )
-from netbox_ai_navigator.model_providers import ModelProvider, MyGPTApiProvider, OpenAICompatibleProvider
+from netbox_ai_navigator.model_providers import ModelProvider, OpenAICompatibleProvider
 from netbox_ai_navigator.rejections import RejectedResponse, RejectionReason
 from netbox_ai_navigator.tool_providers import LocalCurrentUserProvider, ToolContext, ToolProvider
 
@@ -1025,15 +1025,12 @@ class AgentRuntime:
             preview = preview[: -(len(bounded) - self.max_tool_output_chars + 1)]
 
 
-def build_agent_runtime(plugin_settings: dict[str, Any], *, conversation_id: str | None = None) -> AgentRuntime:
+def build_agent_runtime(plugin_settings: dict[str, Any]) -> AgentRuntime:
     model_config = plugin_settings["model"]
     model_provider_name = model_config.get("provider")
-    if model_provider_name == "openai_compatible":
-        model_provider = OpenAICompatibleProvider(model_config)
-    elif model_provider_name == "mygpt_api":
-        model_provider = MyGPTApiProvider(model_config, conversation_id=conversation_id)
-    else:
+    if model_provider_name != "openai_compatible":
         raise InvalidRequestError(f"Unsupported model provider: {model_provider_name}")
+    model_provider = OpenAICompatibleProvider(model_config)
 
     tools_config = plugin_settings["tools"]
     tool_provider_name = tools_config.get("provider")

@@ -28,17 +28,13 @@ from .exceptions import (
 )
 from .filtersets import ResponseLogFilterSet
 from .forms import ResponseLogFilterForm
-from .model_providers import MyGPTApiProvider
 from .models import RejectedResponseLog
 from .rejection_logging import record_rejected_response
 from .rejections import RejectedResponse, RejectionReason
 from .session_state import (
-    clear_mygpt_conversation_id,
     clear_pending_actions,
     discard_pending_action,
-    get_mygpt_conversation_id,
     pop_pending_action,
-    set_mygpt_conversation_id,
     store_pending_action,
 )
 from .tables import RejectedResponseLogTable
@@ -78,7 +74,6 @@ class ChatView(View):
         started = time.monotonic()
         status = "error"
         tool_calls = 0
-        runtime = None
         latest_user_request = ""
         plugin_settings = get_plugin_settings()
         model_name = str(plugin_settings["model"].get("model", ""))
@@ -116,10 +111,7 @@ class ChatView(View):
                 current_object_id=page_context.get("object_id"),
                 can_write=can_write,
             )
-            runtime = build_agent_runtime(
-                plugin_settings,
-                conversation_id=get_mygpt_conversation_id(request),
-            )
+            runtime = build_agent_runtime(plugin_settings)
             result = runtime.run(context, history, page_context)
             tool_calls = result.tool_calls
             if result.rejection is not None:
@@ -180,7 +172,6 @@ class ChatView(View):
             logger.exception("Unhandled assistant request failure")
             return self._json_error("The assistant failed unexpectedly.", status=500)
         finally:
-            self._persist_conversation_id(request, runtime)
             logger.info(
                 "Assistant request completed",
                 extra={
@@ -191,12 +182,6 @@ class ChatView(View):
                     "assistant_status": status,
                 },
             )
-
-    @staticmethod
-    def _persist_conversation_id(request, runtime) -> None:
-        provider = getattr(runtime, "model_provider", None)
-        if isinstance(provider, MyGPTApiProvider) and provider.conversation_id:
-            set_mygpt_conversation_id(request, provider.conversation_id)
 
     @staticmethod
     def _latest_user_request(history: Any) -> str:
@@ -285,17 +270,6 @@ class ResetConversationView(ChatView):
         if not user_can_read_assistant(request.user, plugin_settings):
             return self._json_error("The assistant is not available for this user.", status=403)
 
-        conversation_id = get_mygpt_conversation_id(request)
-        if conversation_id and plugin_settings["model"].get("provider") == "mygpt_api":
-            try:
-                provider = MyGPTApiProvider(plugin_settings["model"], conversation_id=conversation_id)
-                provider.delete_conversation()
-            except ProviderTimeoutError as exc:
-                return self._json_error(str(exc), status=504)
-            except ProviderError as exc:
-                return self._json_error(str(exc), status=502)
-
-        clear_mygpt_conversation_id(request)
         clear_pending_actions(request)
         response = JsonResponse(
             {

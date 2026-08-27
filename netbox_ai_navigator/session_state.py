@@ -3,30 +3,9 @@ import time
 import uuid
 from typing import Any
 
-MYGPT_CONVERSATION_SESSION_KEY = "netbox_ai_navigator_mygpt_conversation_id"
 # This is a session dictionary key, not a hardcoded authentication token.
 BROWSER_STORAGE_TOKEN_SESSION_KEY = "netbox_ai_navigator_browser_storage_token"  # nosec B105
 PENDING_ACTIONS_SESSION_KEY = "netbox_ai_navigator_pending_actions"
-
-
-def get_mygpt_conversation_id(request) -> str | None:
-    session = getattr(request, "session", None)
-    if session is None:
-        return None
-    value = session.get(MYGPT_CONVERSATION_SESSION_KEY)
-    return value if isinstance(value, str) and value else None
-
-
-def set_mygpt_conversation_id(request, conversation_id: str) -> None:
-    session = getattr(request, "session", None)
-    if session is not None:
-        session[MYGPT_CONVERSATION_SESSION_KEY] = conversation_id
-
-
-def clear_mygpt_conversation_id(request) -> None:
-    session = getattr(request, "session", None)
-    if session is not None:
-        session.pop(MYGPT_CONVERSATION_SESSION_KEY, None)
 
 
 def get_or_create_browser_storage_token(request) -> str:

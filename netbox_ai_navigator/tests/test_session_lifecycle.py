@@ -1,46 +1,39 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from django.test import SimpleTestCase
 from django.utils.translation import gettext_lazy
 
 from netbox_ai_navigator.session_state import (
     BROWSER_STORAGE_TOKEN_SESSION_KEY,
-    MYGPT_CONVERSATION_SESSION_KEY,
     PENDING_ACTIONS_SESSION_KEY,
     discard_pending_action,
     pop_pending_action,
     store_pending_action,
 )
-from netbox_ai_navigator.signals import cleanup_conversation_on_logout, reset_conversation_on_login
+from netbox_ai_navigator.signals import cleanup_session_on_logout, reset_session_on_login
 
 
 class AuthenticationLifecycleTest(SimpleTestCase):
-    @patch("netbox_ai_navigator.signals._delete_session_conversation")
-    def test_login_cleans_server_conversation_and_rotates_browser_storage(self, cleanup):
+    def test_login_rotates_browser_storage_and_clears_pending_actions(self):
         request = SimpleNamespace(session={BROWSER_STORAGE_TOKEN_SESSION_KEY: "old-token"})
         request.session[PENDING_ACTIONS_SESSION_KEY] = {"pending": {}}
 
-        reset_conversation_on_login(sender=None, request=request, user=SimpleNamespace())
+        reset_session_on_login(sender=None, request=request, user=SimpleNamespace())
 
-        cleanup.assert_called_once_with(request)
         self.assertNotEqual(request.session[BROWSER_STORAGE_TOKEN_SESSION_KEY], "old-token")
         self.assertNotIn(PENDING_ACTIONS_SESSION_KEY, request.session)
 
-    @patch("netbox_ai_navigator.signals._delete_session_conversation")
-    def test_logout_cleans_server_conversation_and_discards_browser_token(self, cleanup):
+    def test_logout_discards_browser_token_and_pending_actions(self):
         request = SimpleNamespace(
             session={
                 BROWSER_STORAGE_TOKEN_SESSION_KEY: "active-token",
-                MYGPT_CONVERSATION_SESSION_KEY: "conversation-1",
                 PENDING_ACTIONS_SESSION_KEY: {"pending": {}},
             }
         )
 
-        cleanup_conversation_on_logout(sender=None, request=request, user=SimpleNamespace())
+        cleanup_session_on_logout(sender=None, request=request, user=SimpleNamespace())
 
-        cleanup.assert_called_once_with(request)
         self.assertNotIn(BROWSER_STORAGE_TOKEN_SESSION_KEY, request.session)
         self.assertNotIn(PENDING_ACTIONS_SESSION_KEY, request.session)
 

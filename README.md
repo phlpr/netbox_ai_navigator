@@ -13,7 +13,7 @@ separate two-phase approval workflow and are never executed directly by the mode
 Version 0.2 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It provides:
 
 - a localized, resizable global chat window with context from the currently visible NetBox page;
-- an OpenAI-compatible provider for Chat Completions and Responses plus a deployment-specific Custom API Connector;
+- an OpenAI-compatible provider for Chat Completions and Responses;
 - a bounded agent loop with at most ten tool calls per request;
 - dynamic read tools for model discovery, schema inspection, filtering, and object lookup;
 - local search across installed NetBox and plugin documentation;
@@ -28,7 +28,7 @@ Version 0.2 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It pro
 - a permission-protected, categorized audit log for rejected responses and validated write proposals.
 
 The OpenAI-compatible provider requires native tool calling and supports both the Chat Completions and Responses tool
-protocols. The Custom API Connector adapts a deployment-specific backend to the same internal agent contract.
+protocols.
 
 ## Compatibility
 
@@ -48,8 +48,7 @@ Assistant endpoint
       ▼
 AgentRuntime
  ├── ModelProvider
- │    ├── OpenAICompatibleProvider
- │    └── Custom API Connector
+ │    └── OpenAICompatibleProvider
  │
  └── ToolProvider
       └── LocalCurrentUserProvider
@@ -172,12 +171,6 @@ sudo systemctl restart netbox netbox-rq
 
 The migrations register the permission-only `AI Navigator` object type and create the AI response log table.
 The permission anchor remains unmanaged and stores no rows.
-
-### Custom API Connector
-
-An optional, deployment-specific Custom API Connector is available for backends that do not expose an
-OpenAI-compatible interface. Its vendor-specific endpoints and credentials are intentionally not documented in this
-repository. Connector credentials remain server-side and are never returned to the browser.
 
 ## Permissions and security model
 

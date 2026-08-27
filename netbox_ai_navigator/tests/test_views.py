@@ -7,8 +7,7 @@ from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from netbox_ai_navigator.agent import AgentResult
 from netbox_ai_navigator.config import READ_PERMISSION, WRITE_PERMISSION
-from netbox_ai_navigator.model_providers import MyGPTApiProvider
-from netbox_ai_navigator.session_state import MYGPT_CONVERSATION_SESSION_KEY, store_pending_action
+from netbox_ai_navigator.session_state import store_pending_action
 from netbox_ai_navigator.views import ChangeApprovalView, ChatView, ResetConversationView
 
 
@@ -29,21 +28,6 @@ class FakeUser:
 class FakeRuntime:
     def run(self, context, messages, page_context):
         return AgentResult(answer="See [Device](/dcim/devices/1/).", tool_calls=1)
-
-
-class FakeMyGPTRuntime(FakeRuntime):
-    def __init__(self):
-        self.model_provider = MyGPTApiProvider(
-            {
-                "api_url": "https://api.myg.pt/api/v1/",
-                "tenant": "test-tenant",
-                "service_user": "service@example.test",
-                "service_password": "server-secret",
-                "channel_id": "channel-1",
-                "delete_conversations": True,
-            },
-            conversation_id="conversation-1",
-        )
 
 
 class FakeActionRuntime(FakeRuntime):
@@ -174,21 +158,6 @@ class ChatViewTest(SimpleTestCase):
 
         self.assertEqual(response.status_code, 415)
 
-    @patch("netbox_ai_navigator.views.build_agent_runtime", return_value=FakeMyGPTRuntime())
-    def test_persists_mygpt_conversation_in_netbox_session(self, _build_runtime):
-        request = self.factory.post(
-            "/plugins/ai-navigator/api/chat/",
-            data=json.dumps({"messages": [{"role": "user", "content": "Continue"}]}),
-            content_type="application/json",
-        )
-        request.user = FakeUser()
-        request.session = {}
-
-        response = ChatView.as_view()(request)
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(request.session[MYGPT_CONVERSATION_SESSION_KEY], "conversation-1")
-
     @patch("netbox_ai_navigator.views.build_agent_runtime", return_value=FakeActionRuntime())
     def test_returns_public_actions_but_keeps_execution_payload_in_session(self, _build_runtime):
         request = self.factory.post(
@@ -260,41 +229,21 @@ class ChatViewTest(SimpleTestCase):
         cache.clear()
 
 
-@override_settings(
-    PLUGINS_CONFIG={
-        "netbox_ai_navigator": {
-            "enabled": True,
-            "model": {
-                "provider": "mygpt_api",
-                "api_url": "https://api.myg.pt/api/v1/",
-                "tenant": "test-tenant",
-                "service_user": "service@example.test",
-                "service_password": "server-secret",
-                "channel_id": "channel-1",
-                "delete_conversations": True,
-                "model": "mygpt-service-channel",
-            },
-        }
-    }
-)
 class ResetConversationViewTest(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
 
-    @patch("netbox_ai_navigator.views.MyGPTApiProvider")
-    def test_manual_reset_deletes_mygpt_and_clears_session(self, provider_class):
+    def test_manual_reset_clears_pending_actions(self):
         request = self.factory.post("/plugins/ai-navigator/api/chat/reset/", data="{}", content_type="application/json")
         request.user = FakeUser()
-        request.session = {MYGPT_CONVERSATION_SESSION_KEY: "conversation-1"}
+        request.session = {"netbox_ai_navigator_pending_actions": {"action": {}}}
 
         response = ResetConversationView.as_view()(request)
         payload = json.loads(response.content)
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(payload["can_write"])
-        self.assertNotIn(MYGPT_CONVERSATION_SESSION_KEY, request.session)
-        provider_class.assert_called_once()
-        provider_class.return_value.delete_conversation.assert_called_once_with()
+        self.assertNotIn("netbox_ai_navigator_pending_actions", request.session)
 
 
 @override_settings(
