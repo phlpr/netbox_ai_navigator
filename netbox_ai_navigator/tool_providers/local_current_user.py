@@ -121,7 +121,10 @@ class LocalCurrentUserProvider(ToolProvider):
                 name="list_object_types",
                 description=(
                     "Discover the core and plugin NetBox object types available to the current-user assistant. "
-                    "Use query to narrow the result by model label or translated name."
+                    "This is a one-shot discovery tool: call it at most once per user request and never call it "
+                    "several times in parallel. Omit query when several types may be relevant; otherwise use one "
+                    "specific technical model noun. Do not use it for the known core labels dcim.device, dcim.site, "
+                    "dcim.location, or virtualization.virtualmachine."
                 ),
                 input_schema={
                     "type": "object",

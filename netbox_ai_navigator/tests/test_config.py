@@ -50,6 +50,18 @@ class DynamicToolConfigurationTest(SimpleTestCase):
         with self.assertRaisesMessage(ImproperlyConfigured, "embedded credentials"):
             validate_plugin_settings({"model": {"base_url": "https://user:password@model.example/v1"}})
 
+    def test_openai_compatible_protocol_is_validated(self):
+        validate_plugin_settings({"model": {"protocol": "responses"}})
+        with self.assertRaisesMessage(ImproperlyConfigured, "model.protocol"):
+            validate_plugin_settings({"model": {"protocol": "completions"}})
+
+    def test_extra_provider_headers_are_validated(self):
+        validate_plugin_settings({"model": {"extra_headers": {"deployment-id": "test-model"}}})
+        with self.assertRaisesMessage(ImproperlyConfigured, "reserved"):
+            validate_plugin_settings({"model": {"extra_headers": {"Content-Type": "text/plain"}}})
+        with self.assertRaisesMessage(ImproperlyConfigured, "line breaks"):
+            validate_plugin_settings({"model": {"extra_headers": {"deployment-id": "model\nInjected"}}})
+
     def test_rate_limit_is_bounded(self):
         with self.assertRaises(ImproperlyConfigured):
             validate_plugin_settings({"agent": {"requests_per_minute": 601}})

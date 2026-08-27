@@ -13,7 +13,7 @@ separate two-phase approval workflow and are never executed directly by the mode
 Version 0.2 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It provides:
 
 - a localized, resizable global chat window with context from the currently visible NetBox page;
-- an OpenAI Chat Completions provider and a deployment-specific Custom API Connector with function/tool calling;
+- an OpenAI-compatible provider for Chat Completions and Responses plus a deployment-specific Custom API Connector;
 - a bounded agent loop with at most ten tool calls per request;
 - dynamic read tools for model discovery, schema inspection, filtering, and object lookup;
 - local search across installed NetBox and plugin documentation;
@@ -27,8 +27,8 @@ Version 0.2 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It pro
 - session-scoped conversation history without persisting normal chat messages in the NetBox database;
 - a permission-protected audit log for final model responses rejected by Navigator safety controls.
 
-The OpenAI-compatible provider requires native tool calling. The Custom API Connector adapts a deployment-specific
-backend to the same internal agent contract.
+The OpenAI-compatible provider requires native tool calling and supports both the Chat Completions and Responses tool
+protocols. The Custom API Connector adapts a deployment-specific backend to the same internal agent contract.
 
 ## Compatibility
 
@@ -85,10 +85,13 @@ PLUGINS_CONFIG = {
         "enabled": True,
         "model": {
             "provider": "openai_compatible",
+            "protocol": "chat_completions",
             "base_url": "http://ollama:11434/v1",
             # Required only for a trusted non-loopback HTTP endpoint such as this container hostname.
             "allow_insecure_http": True,
             "api_key": os.getenv("NETBOX_AI_NAVIGATOR_API_KEY"),
+            # Optional deployment-specific headers. Authorization and transport headers are reserved.
+            "extra_headers": {},
             "model": "qwen3",
             "timeout": 60,
             "temperature": 0.1,
@@ -136,6 +139,28 @@ PLUGINS_CONFIG = {
     }
 }
 ```
+
+For a provider exposing the OpenAI Responses API, use the same provider with `protocol="responses"`. The configured
+base URL must be the API root immediately before `/responses`; do not append the endpoint itself. Additional
+deployment-routing headers can be supplied server-side without exposing them to the browser:
+
+```python
+"model": {
+    "provider": "openai_compatible",
+    "protocol": "responses",
+    "base_url": "https://model.example/v1",
+    "api_key": os.getenv("NETBOX_AI_NAVIGATOR_API_KEY"),
+    "extra_headers": {"deployment-id": "example-deployment"},
+    "model": "example-model",
+    "temperature": None,
+    "max_tokens": 2000,
+}
+```
+
+Responses requests use `store=False`. During one bounded agent run, the required provider output items are replayed
+with new tool results or refinement instructions so reasoning context is preserved without creating a persistent
+provider-side conversation. Response-only lifecycle fields are removed for compatibility when those items become
+request input.
 
 Apply the database migrations, collect static assets, and restart NetBox:
 

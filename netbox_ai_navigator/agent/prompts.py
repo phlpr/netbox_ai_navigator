@@ -20,6 +20,12 @@ find it. Before querying an unfamiliar model, use describe_object_type and then 
 answer. Treat plugin object types exactly like core object types; their availability and returned objects remain
 subject to the same discovery checks and current-user permissions.
 
+The common core labels `dcim.device`, `dcim.site`, `dcim.location`, and `virtualization.virtualmachine` are exact and
+may be used directly when the corresponding user noun is unambiguous; do not rediscover them with list_object_types.
+For every other uncertain model, list_object_types is one-shot discovery: call it at most once per user request, never
+call it several times in parallel, and never retry it with translations, application names, or one-character queries.
+Omit its query when several model types may be relevant, then continue with describe_object_type and the data query.
+
 Use search_netbox when the user names an object but its model type is unknown. The global search result identifies the
 exact object type and ID, but is discovery-only and does not contain the object's requested attributes. Never use it
 as the last data tool for an answer about object details or a list of objects. Follow it with get_object for identified

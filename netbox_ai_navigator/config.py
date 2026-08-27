@@ -4,7 +4,7 @@ from typing import Any
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
-from .provider_http import normalize_provider_url
+from .provider_http import normalize_provider_headers, normalize_provider_url
 
 PLUGIN_NAME = "netbox_ai_navigator"
 READ_PERMISSION = f"{PLUGIN_NAME}.use_read_ainavigator"
@@ -14,9 +14,11 @@ DEFAULT_SETTINGS = {
     "enabled": True,
     "model": {
         "provider": "openai_compatible",
+        "protocol": "chat_completions",
         "base_url": "http://localhost:11434/v1",
         "api_url": "https://api.myg.pt/api/v1/",
         "api_key": None,
+        "extra_headers": {},
         "allow_insecure_http": False,
         "model": "qwen3",
         "tenant": None,
@@ -92,6 +94,10 @@ def validate_plugin_settings(configured: dict[str, Any]) -> None:
         not isinstance(model.get("base_url"), str) or not model["base_url"].strip()
     ):
         raise ImproperlyConfigured("netbox_ai_navigator.model.base_url must be configured.")
+    if model_provider == "openai_compatible" and model.get("protocol") not in {"chat_completions", "responses"}:
+        raise ImproperlyConfigured(
+            "netbox_ai_navigator.model.protocol must be chat_completions or responses."
+        )
     if not isinstance(model.get("allow_insecure_http"), bool):
         raise ImproperlyConfigured("netbox_ai_navigator.model.allow_insecure_http must be a boolean.")
     provider_url_key = "base_url" if model_provider == "openai_compatible" else "api_url"
@@ -107,6 +113,10 @@ def validate_plugin_settings(configured: dict[str, Any]) -> None:
             raise ImproperlyConfigured("netbox_ai_navigator.model.delete_conversations must enable session cleanup.")
     if model.get("api_key") is not None and not isinstance(model["api_key"], str):
         raise ImproperlyConfigured("netbox_ai_navigator.model.api_key must be a string or null.")
+    try:
+        normalize_provider_headers(model.get("extra_headers"))
+    except ValueError as exc:
+        raise ImproperlyConfigured(f"netbox_ai_navigator.model.extra_headers is invalid: {exc}") from exc
     if not isinstance(model.get("model"), str) or not model["model"].strip():
         raise ImproperlyConfigured("netbox_ai_navigator.model.model must be configured.")
     _require_positive_number(model, "timeout", "model.timeout")

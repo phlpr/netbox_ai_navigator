@@ -1,7 +1,21 @@
 import ipaddress
 import json
+import re
 from typing import Any
 from urllib.parse import urlsplit
+
+_HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_RESERVED_PROVIDER_HEADERS = {
+    "accept",
+    "authorization",
+    "connection",
+    "content-length",
+    "content-type",
+    "cookie",
+    "host",
+    "proxy-authorization",
+    "transfer-encoding",
+}
 
 
 class ProviderResponseTooLargeError(ValueError):
@@ -29,6 +43,27 @@ def normalize_provider_url(value: Any, *, allow_insecure_http: bool = False) -> 
         raise ValueError("Provider URLs may not contain a query string or fragment.")
     if parsed.scheme == "http" and not allow_insecure_http and not _is_loopback_host(parsed.hostname):
         raise ValueError("Plain HTTP is allowed only for loopback providers unless explicitly enabled.")
+    return normalized
+
+
+def normalize_provider_headers(value: Any) -> dict[str, str]:
+    """Validate configured provider headers without allowing transport headers to be replaced."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("Provider headers must be a dictionary.")
+
+    normalized: dict[str, str] = {}
+    for name, header_value in value.items():
+        if not isinstance(name, str) or not name or len(name) > 100 or not _HEADER_NAME_PATTERN.fullmatch(name):
+            raise ValueError("Provider header names must be valid HTTP header names.")
+        if name.casefold() in _RESERVED_PROVIDER_HEADERS:
+            raise ValueError(f"The provider header {name!r} is reserved.")
+        if not isinstance(header_value, str) or not header_value or len(header_value) > 4096:
+            raise ValueError("Provider header values must be non-empty strings of at most 4096 characters.")
+        if "\r" in header_value or "\n" in header_value:
+            raise ValueError("Provider header values may not contain line breaks.")
+        normalized[name] = header_value
     return normalized
 
 

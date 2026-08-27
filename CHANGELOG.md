@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add OpenAI Responses API support and validated deployment-specific headers to the general OpenAI-compatible
+  provider while retaining Chat Completions compatibility.
+
 ## 0.2.0 - 2026-08-27
 
 - Validate small multi-object updates atomically and require a separate browser confirmation for every object.
