@@ -10,7 +10,7 @@ separate two-phase approval workflow and are never executed directly by the mode
 
 ## Status
 
-Version 0.3 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It provides:
+Version 0.4 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It provides:
 
 - a localized, resizable global chat window with context from the currently visible NetBox page;
 - an OpenAI-compatible provider for Chat Completions and Responses;
@@ -36,9 +36,7 @@ protocols.
 
 | Plugin Release | NetBox | Python |
 |---|---|---|
-| `0.3.x` | `4.5.10` to `4.6.x` (tested with `4.5.10` and `4.6.8`; CI uses `4.6.9`) | `3.12`, `3.13`, `3.14` |
-| `0.2.x` | `4.5.10` to `4.6.x` (tested with `4.5.10` and `4.6.8`; CI uses `4.6.9`) | `3.12`, `3.13`, `3.14` |
-| `0.1.x` | `4.5.10` to `4.6.x` (tested with `4.5.10` and `4.6.8`; CI uses `4.6.9`) | `3.12`, `3.13`, `3.14` |
+| `0.4.x` | `4.5.10` to `4.6.x` (tested with `4.5.10` and `4.6.8`; CI uses `4.6.9`) | `3.12`, `3.13`, `3.14` |
 
 ## Architecture
 

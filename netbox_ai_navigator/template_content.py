@@ -3,6 +3,7 @@ from django.urls import reverse
 from django.utils.translation import gettext as _
 from netbox.plugins import PluginTemplateExtension
 
+from . import __version__
 from .config import get_plugin_settings, user_can_read_assistant, user_can_write_assistant
 from .session_state import get_or_create_browser_storage_token
 from .tool_providers.local_current_user import LocalCurrentUserProvider
@@ -12,8 +13,8 @@ def get_ui_translations() -> dict[str, str]:
     return {
         "open_assistant": _("Open NetBox AI Navigator"),
         "dialog_label": _("NetBox AI Navigator"),
-        "subtitle": _("Read-only · your permissions"),
-        "subtitle_write": _("Read and write · your permissions"),
+        "subtitle": _("Read-only"),
+        "subtitle_write": _("Read and write"),
         "expand_assistant": _("Expand assistant"),
         "restore_assistant": _("Restore assistant size"),
         "clear_conversation": _("Clear conversation"),
@@ -67,6 +68,7 @@ class GlobalAssistantExtension(PluginTemplateExtension):
             "approval_endpoint": reverse("plugins:netbox_ai_navigator:approve_action"),
             "csrf_token": get_token(request),
             "storage_token": get_or_create_browser_storage_token(request),
+            "version": __version__,
             "can_write": user_can_write_assistant(request.user, plugin_settings),
             "translations": get_ui_translations(),
             "page_context": {

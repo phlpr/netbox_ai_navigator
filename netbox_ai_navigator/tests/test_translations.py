@@ -11,8 +11,8 @@ class UITranslationTest(SimpleTestCase):
             read_permission = gettext("Use AI Navigator in read-only mode")
             write_permission = gettext("Use AI Navigator with write capabilities")
 
-        self.assertEqual(translations["subtitle"], "Nur Lesen · Ihre Berechtigungen")
-        self.assertEqual(translations["subtitle_write"], "Lesen und Schreiben · Ihre Berechtigungen")
+        self.assertEqual(translations["subtitle"], "Nur Lesen")
+        self.assertEqual(translations["subtitle_write"], "Lesen und Schreiben")
         self.assertEqual(translations["send"], "Senden")
         self.assertEqual(translations["confirm_change"], "Änderung bestätigen")
         self.assertEqual(translations["expand_assistant"], "Assistent vergrößern")

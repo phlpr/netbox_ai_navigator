@@ -16,8 +16,8 @@
   const defaultTranslations = {
     open_assistant: "Open NetBox AI Navigator",
     dialog_label: "NetBox AI Navigator",
-    subtitle: "Read-only · your permissions",
-    subtitle_write: "Read and write · your permissions",
+    subtitle: "Read-only",
+    subtitle_write: "Read and write",
     expand_assistant: "Expand assistant",
     restore_assistant: "Restore assistant size",
     clear_conversation: "Clear conversation",
@@ -105,7 +105,10 @@
         <textarea id="nbai-question" rows="1" maxlength="12000" required></textarea>
         <button class="nbai__send" type="submit"></button>
       </form>
-      <div class="nbai__notice"></div>
+      <footer class="nbai__footer">
+        <span class="nbai__version"></span>
+        <div class="nbai__notice"></div>
+      </footer>
     </div>`;
   document.body.appendChild(root);
 
@@ -121,6 +124,7 @@
   const input = root.querySelector("textarea");
   const sendButton = root.querySelector(".nbai__send");
   const subtitleElement = root.querySelector(".nbai__subtitle");
+  const versionElement = root.querySelector(".nbai__version");
   let panelSizeBeforeExpand = null;
   let dragState = null;
 
@@ -139,6 +143,7 @@
   input.placeholder = translate("placeholder");
   sendButton.setAttribute("aria-label", translate("send_question"));
   sendButton.textContent = translate("send");
+  versionElement.textContent = typeof config.version === "string" && config.version ? `v${config.version}` : "";
   root.querySelector(".nbai__notice").textContent = translate("notice");
 
   function setOpen(open) {

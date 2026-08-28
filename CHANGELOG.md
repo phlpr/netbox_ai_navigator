@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-08-28
 
 - Add permission-verified automatic NetBox navigation for explicit commands and retain the last verified result
   targets so contextual follow-ups such as "navigate there" can be resolved safely.
@@ -15,6 +15,7 @@
   an explicit change request stops after lookup without creating a validated proposal.
 - Report safe Responses API incomplete reasons for output-token limits and content filtering.
 - Add deterministic offset pagination to object queries so complete filtered lists can span multiple tool calls.
+- Show the plugin version in the assistant footer and simplify the read/write capability label.
 
 ## 0.3.0 - 2026-08-27
 

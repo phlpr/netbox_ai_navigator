@@ -8,6 +8,7 @@ from tenancy.models import Contact, ContactAssignment, ContactRole
 from users.models import ObjectPermission
 from virtualization.models import VirtualMachine
 
+from netbox_ai_navigator import __version__
 from netbox_ai_navigator.config import user_can_read_assistant, user_can_write_assistant
 from netbox_ai_navigator.exceptions import ToolValidationError
 from netbox_ai_navigator.models import AINavigator
@@ -50,6 +51,14 @@ class NavigatorCapabilityPermissionTest(TestCase):
         request.user = self.denied_user
 
         self.assertEqual(GlobalAssistantExtension({"request": request}).head(), "")
+
+    def test_visible_ui_bootstrap_contains_plugin_version(self):
+        request = RequestFactory().get("/")
+        request.user = self.read_user
+
+        content = GlobalAssistantExtension({"request": request}).head()
+
+        self.assertIn(f'"version": "{__version__}"', content)
 
     def test_global_kill_switch_overrides_permissions(self):
         disabled = {"enabled": False}

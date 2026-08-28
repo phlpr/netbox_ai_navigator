@@ -2,7 +2,7 @@ from netbox.plugins import PluginConfig
 
 from .config import DEFAULT_SETTINGS, validate_plugin_settings
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 
 class NetBoxAINavigatorConfig(PluginConfig):
