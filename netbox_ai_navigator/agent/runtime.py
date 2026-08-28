@@ -56,6 +56,14 @@ COMPLETE_LIST_REQUEST_RE = re.compile(
     r"\b(?:all|every|complete|alle[nrms]?|sämtliche[nrms]?|saemtliche[nrms]?|vollständig(?:e[nrms]?)?)\b",
     re.IGNORECASE,
 )
+NAVIGATION_INTENT_RE = re.compile(
+    r"\b(?:navigate|navigiere|navigieren|open|öffne|oeffne|go\s+to|gehe\s+zu|springe\s+zu)\b",
+    re.IGNORECASE,
+)
+NAVIGATION_REFERENCE_RE = re.compile(
+    r"\b(?:there|it|dahin|dorthin|dort|da|dies(?:e[snr]?|en)|that|this)\b",
+    re.IGNORECASE,
+)
 EMPTY_TABLE_VALUES = frozenset({"", "-", "—", "n/a", "none", "null"})
 DISCOVERY_ONLY_RECORD_KEYS = frozenset({"id", "display", "display_url", "object_type"})
 MAX_AUTOMATIC_HYDRATION_OBJECTS = 20
@@ -130,6 +138,7 @@ class AgentResult:
     tool_calls: int
     client_actions: tuple[dict[str, Any], ...] = ()
     pending_actions: tuple[dict[str, Any], ...] = ()
+    navigation_targets: tuple[dict[str, Any], ...] = ()
     rejection: RejectedResponse | None = None
 
 
@@ -176,6 +185,13 @@ class AgentRuntime:
         page_context: dict[str, Any] | None = None,
     ) -> AgentResult:
         normalized_history = self._normalize_history(history)
+        latest_user_message = normalized_history[-1]["content"]
+        navigation_requested = self._looks_like_navigation_request(latest_user_message)
+        navigation_reference_requested = bool(NAVIGATION_REFERENCE_RE.search(latest_user_message))
+        previous_navigation_targets = (
+            page_context.get("previous_navigation_targets", []) if isinstance(page_context, dict) else []
+        )
+        ambiguous_navigation_reference = navigation_reference_requested and len(previous_navigation_targets) != 1
         model_tools = [definition.as_model_tool() for definition in self.tool_provider.list_tools(context)]
         bulk_update_requested = self._looks_like_multi_object_update_request(normalized_history[-1]["content"])
         bulk_update_available = any(
@@ -262,6 +278,7 @@ class AgentRuntime:
         pagination_refinement_offsets: set[int] = set()
         data_refresh_requested = False
         force_grounded_fallback = False
+        navigation_refinement_count = 0
 
         while True:
             while response.tool_calls:
@@ -377,6 +394,38 @@ class AgentRuntime:
                 forced_final = tool_call_count >= self.max_tool_calls
                 response = self.model_provider.complete(messages, [] if forced_final else model_tools)
 
+            navigation_tools_available = any(name.startswith("navigate_to_") for name in available_tool_names)
+            needs_navigation_refinement = (
+                not forced_final
+                and navigation_requested
+                and navigation_tools_available
+                and not ambiguous_navigation_reference
+                and not client_actions
+                and not pending_actions
+                and navigation_refinement_count < 2
+            )
+            if needs_navigation_refinement:
+                navigation_refinement_count += 1
+                if "search_netbox" in successful_data_tools:
+                    instruction = (
+                        "The explicit navigation request has matching search_netbox results but no verified browser "
+                        "navigation action yet. Select the one exact result matching the user's requested type and "
+                        "name, then call navigate_to_object with its object_type and ID now. If the results are "
+                        "ambiguous, ask for the exact object instead of guessing."
+                    )
+                else:
+                    instruction = (
+                        "The user explicitly requested browser navigation, but no verified navigation action was "
+                        "created. If previous_navigation_targets contains one unambiguous target, or exactly one "
+                        "label matching the user's wording, call navigate_to_object with its exact object_type and "
+                        "object_id now. For a named target that "
+                        "has not been resolved, use search_netbox first and then navigate_to_object. Use list or "
+                        "search navigation only when that is what the user explicitly requested. Never invent a URL."
+                    )
+                messages.append({"role": "system", "content": instruction})
+                response = self.model_provider.complete(messages, model_tools)
+                continue
+
             needs_search_refinement = (
                 not forced_final
                 and not search_refinement_requested
@@ -384,6 +433,7 @@ class AgentRuntime:
                 and not DETAIL_TOOL_NAMES.intersection(successful_data_tools)
                 and not client_actions
                 and not pending_actions
+                and not navigation_requested
             )
             if not needs_search_refinement:
                 needs_automatic_hydration = (
@@ -522,6 +572,12 @@ class AgentRuntime:
                 ) % {"count": len(pending_actions)}
         elif not answer:
             raise InvalidRequestError("The model did not return a final answer.")
+        elif navigation_requested and not client_actions:
+            rejection_reason = RejectionReason.GROUNDING_GUARD
+            answer = _(
+                "No unique visible navigation target could be resolved. Please specify the exact NetBox object "
+                "and try again."
+            )
         elif not successful_tool_calls and not self._answer_references_netbox_data(answer):
             if self._looks_like_change_request(normalized_history[-1]["content"]):
                 rejection_reason = RejectionReason.CHANGE_GUARD
@@ -594,6 +650,7 @@ class AgentRuntime:
             tool_calls=tool_call_count,
             client_actions=tuple(client_actions),
             pending_actions=tuple(pending_actions),
+            navigation_targets=self._navigation_targets(grounding_records, answer),
             rejection=rejection,
         )
 
@@ -616,6 +673,10 @@ class AgentRuntime:
                 or OBJECT_IDENTIFIER_RE.search(user_message)
             )
         )
+
+    @staticmethod
+    def _looks_like_navigation_request(user_message: str) -> bool:
+        return bool(NAVIGATION_INTENT_RE.search(user_message))
 
     @classmethod
     def _looks_like_multi_object_update_request(cls, user_message: str) -> bool:
@@ -689,6 +750,7 @@ class AgentRuntime:
     def _valid_client_action(action: dict[str, Any]) -> bool:
         url = action.get("url")
         label = action.get("label")
+        automatic = action.get("auto")
         return bool(
             action.get("type") == "navigate"
             and isinstance(url, str)
@@ -697,7 +759,47 @@ class AgentRuntime:
             and len(url) <= 2048
             and isinstance(label, str)
             and 0 < len(label) <= 500
+            and (automatic is None or isinstance(automatic, bool))
         )
+
+    @classmethod
+    def _navigation_targets(
+        cls,
+        records: list[GroundingRecord],
+        answer: str,
+    ) -> tuple[dict[str, Any], ...]:
+        answer_urls = {cls._url_key(target) for _label, target in MARKDOWN_LINK_RE.findall(answer)}
+        visible_answer = cls._normalize_value(cls._strip_markdown(answer))
+        targets: list[dict[str, Any]] = []
+        seen: set[tuple[str, int]] = set()
+        for record in records:
+            object_id = record.data.get("id")
+            if (
+                not record.object_type
+                or isinstance(object_id, bool)
+                or not isinstance(object_id, int)
+                or object_id < 1
+            ):
+                continue
+            visible_by_url = bool(record.object_urls.intersection(answer_urls))
+            visible_by_label = cls._normalize_value(record.display) in visible_answer
+            identity = (record.object_type, object_id)
+            if identity in seen or not (visible_by_url or visible_by_label):
+                continue
+            seen.add(identity)
+            label = record.data.get("display")
+            if not isinstance(label, str) or not label:
+                label = record.display
+            targets.append(
+                {
+                    "object_type": record.object_type,
+                    "object_id": object_id,
+                    "label": label[:500],
+                }
+            )
+            if len(targets) >= 20:
+                break
+        return tuple(targets)
 
     def _validate_grounding(
         self,

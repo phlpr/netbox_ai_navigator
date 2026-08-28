@@ -247,6 +247,7 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
 
         self.assertEqual(result["client_action"]["type"], "navigate")
         self.assertEqual(result["client_action"]["url"], "/search/?q=edge+router")
+        self.assertTrue(result["client_action"]["auto"])
 
     @patch("netbox_ai_navigator.tool_providers.local_current_user.search_backend.search")
     def test_global_search_returns_only_one_discovered_identity_per_object(self, search):

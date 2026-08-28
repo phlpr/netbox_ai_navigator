@@ -79,6 +79,27 @@ class FakeBatchActionRuntime(FakeRuntime):
         )
 
 
+class NavigationContextRuntime(FakeRuntime):
+    def __init__(self):
+        self.page_contexts = []
+
+    def run(self, context, messages, page_context):
+        self.page_contexts.append(page_context)
+        if len(self.page_contexts) == 1:
+            return AgentResult(
+                answer="Found the contact.",
+                tool_calls=1,
+                navigation_targets=(
+                    {
+                        "object_type": "tenancy.contact",
+                        "object_id": 7,
+                        "label": "Fictional Lab Operations",
+                    },
+                ),
+            )
+        return AgentResult(answer="Opening the contact.", tool_calls=1)
+
+
 @override_settings(
     PLUGINS_CONFIG={
         "netbox_ai_navigator": {
@@ -110,6 +131,41 @@ class ChatViewTest(SimpleTestCase):
         self.assertFalse(payload["can_write"])
         self.assertNotIn("never-return-this", response.content.decode())
         self.assertIn("no-store", response["Cache-Control"])
+
+    def test_passes_previous_verified_navigation_targets_to_next_request(self):
+        runtime = NavigationContextRuntime()
+        session = {}
+        with patch("netbox_ai_navigator.views.build_agent_runtime", return_value=runtime):
+            first_request = self.factory.post(
+                "/plugins/ai-navigator/api/chat/",
+                data=json.dumps({"messages": [{"role": "user", "content": "Find the contact"}]}),
+                content_type="application/json",
+            )
+            first_request.user = FakeUser()
+            first_request.session = session
+            first_response = ChatView.as_view()(first_request)
+
+            second_request = self.factory.post(
+                "/plugins/ai-navigator/api/chat/",
+                data=json.dumps({"messages": [{"role": "user", "content": "Navigate there"}]}),
+                content_type="application/json",
+            )
+            second_request.user = FakeUser()
+            second_request.session = session
+            second_response = ChatView.as_view()(second_request)
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(
+            runtime.page_contexts[1]["previous_navigation_targets"],
+            [
+                {
+                    "object_type": "tenancy.contact",
+                    "object_id": 7,
+                    "label": "Fictional Lab Operations",
+                }
+            ],
+        )
 
     def test_requires_authentication(self):
         request = self.factory.post(
@@ -236,7 +292,12 @@ class ResetConversationViewTest(SimpleTestCase):
     def test_manual_reset_clears_pending_actions(self):
         request = self.factory.post("/plugins/ai-navigator/api/chat/reset/", data="{}", content_type="application/json")
         request.user = FakeUser()
-        request.session = {"netbox_ai_navigator_pending_actions": {"action": {}}}
+        request.session = {
+            "netbox_ai_navigator_pending_actions": {"action": {}},
+            "netbox_ai_navigator_navigation_targets": [
+                {"object_type": "dcim.device", "object_id": 1, "label": "device-01"}
+            ],
+        }
 
         response = ResetConversationView.as_view()(request)
         payload = json.loads(response.content)
@@ -244,6 +305,7 @@ class ResetConversationViewTest(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(payload["can_write"])
         self.assertNotIn("netbox_ai_navigator_pending_actions", request.session)
+        self.assertNotIn("netbox_ai_navigator_navigation_targets", request.session)
 
 
 @override_settings(

@@ -215,6 +215,51 @@ class FakeActionToolProvider(ToolProvider):
         raise ToolNotFoundError(name)
 
 
+class FakeNavigationToolProvider(ToolProvider):
+    def __init__(self):
+        self.calls = []
+
+    def list_tools(self, context):
+        return [
+            ToolDefinition(
+                name="search_netbox",
+                description="Search test objects.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": True},
+            ),
+            ToolDefinition(
+                name="navigate_to_object",
+                description="Navigate to one test object.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": True},
+            ),
+        ]
+
+    def call_tool(self, context, name, arguments):
+        self.calls.append((name, arguments))
+        if name == "search_netbox":
+            return {
+                "query": "Fictional Lab Operations",
+                "returned": 1,
+                "objects": [
+                    {
+                        "id": 7,
+                        "display": "Fictional Lab Operations",
+                        "display_url": "http://testserver/tenancy/contacts/7/",
+                        "object_type": "tenancy.contact",
+                    }
+                ],
+            }
+        if name == "navigate_to_object":
+            return {
+                "client_action": {
+                    "type": "navigate",
+                    "url": "/tenancy/contacts/7/",
+                    "label": "Fictional Lab Operations",
+                    "auto": True,
+                }
+            }
+        raise ToolNotFoundError(name)
+
+
 class FakePagedVMToolProvider(ToolProvider):
     def __init__(self):
         self.calls = []
@@ -1211,3 +1256,123 @@ Both devices are used in the **GeoView Test Lab** environment."""
 
         self.assertEqual(result.client_actions[0]["url"], "/dcim/devices/4/")
         self.assertEqual(result.pending_actions[0]["operation"], "update")
+
+    def test_reprompts_named_navigation_until_verified_action_is_created(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(content="I found the requested contact."),
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "search",
+                            "search_netbox",
+                            {"query": "Fictional Lab Operations"},
+                        )
+                    ]
+                ),
+                ModelResponse(content="The contact was found."),
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "navigate",
+                            "navigate_to_object",
+                            {"object_type": "tenancy.contact", "object_id": 7},
+                        )
+                    ]
+                ),
+                ModelResponse(content="Opening Fictional Lab Operations."),
+            ]
+        )
+        tools = FakeNavigationToolProvider()
+
+        result = AgentRuntime(model, tools).run(
+            self.context,
+            [{"role": "user", "content": "Navigiere zu Kontakt Fictional Lab Operations"}],
+        )
+
+        self.assertEqual([name for name, _arguments in tools.calls], ["search_netbox", "navigate_to_object"])
+        self.assertEqual(result.client_actions[0]["url"], "/tenancy/contacts/7/")
+        self.assertTrue(result.client_actions[0]["auto"])
+        self.assertEqual(result.tool_calls, 2)
+
+    def test_contextual_navigation_uses_single_previous_target(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(content="I will open it."),
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "navigate",
+                            "navigate_to_object",
+                            {"object_type": "tenancy.contact", "object_id": 7},
+                        )
+                    ]
+                ),
+                ModelResponse(content="Opening Fictional Lab Operations."),
+            ]
+        )
+        tools = FakeNavigationToolProvider()
+
+        result = AgentRuntime(model, tools).run(
+            self.context,
+            [{"role": "user", "content": "Navigiere dahin"}],
+            {
+                "previous_navigation_targets": [
+                    {
+                        "object_type": "tenancy.contact",
+                        "object_id": 7,
+                        "label": "Fictional Lab Operations",
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(tools.calls, [("navigate_to_object", {"object_type": "tenancy.contact", "object_id": 7})])
+        self.assertEqual(result.client_actions[0]["label"], "Fictional Lab Operations")
+
+    def test_contextual_navigation_rejects_ambiguous_previous_targets(self):
+        model = FakeModelProvider([ModelResponse(content="Which object should I open?")])
+
+        result = AgentRuntime(model, FakeNavigationToolProvider()).run(
+            self.context,
+            [{"role": "user", "content": "Navigiere dahin"}],
+            {
+                "previous_navigation_targets": [
+                    {"object_type": "dcim.device", "object_id": 1, "label": "device-01"},
+                    {"object_type": "dcim.device", "object_id": 2, "label": "device-02"},
+                ]
+            },
+        )
+
+        self.assertEqual(
+            result.answer,
+            "No unique visible navigation target could be resolved. Please specify the exact NetBox object "
+            "and try again.",
+        )
+        self.assertEqual(result.client_actions, ())
+
+    def test_exposes_answered_object_as_contextual_navigation_target(self):
+        device = GRAZ_DEVICES[0]
+        answer = f"Found [{device['display']}]({device['display_url']})."
+        model = FakeModelProvider(
+            [
+                ModelResponse(tool_calls=[ModelToolCall("query", "query_objects", {})]),
+                ModelResponse(content=answer),
+            ]
+        )
+
+        result = AgentRuntime(model, FakeDeviceToolProvider([device])).run(
+            self.context,
+            [{"role": "user", "content": "Find gv-graz-access-01"}],
+        )
+
+        self.assertEqual(
+            result.navigation_targets,
+            (
+                {
+                    "object_type": "dcim.device",
+                    "object_id": device["id"],
+                    "label": device["display"],
+                },
+            ),
+        )

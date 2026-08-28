@@ -32,9 +32,12 @@ from .models import RejectedResponseLog
 from .rejection_logging import record_rejected_response
 from .rejections import RejectedResponse, RejectionReason
 from .session_state import (
+    clear_navigation_targets,
     clear_pending_actions,
     discard_pending_action,
+    get_navigation_targets,
     pop_pending_action,
+    store_navigation_targets,
     store_pending_action,
 )
 from .tables import RejectedResponseLogTable
@@ -103,6 +106,9 @@ class ChatView(View):
             history = payload.get("messages")
             latest_user_request = self._latest_user_request(history)
             page_context = self._sanitize_page_context(payload.get("page_context"))
+            previous_navigation_targets = get_navigation_targets(request)
+            if previous_navigation_targets:
+                page_context["previous_navigation_targets"] = previous_navigation_targets
             can_write = user_can_write_assistant(request.user, plugin_settings)
             context = ToolContext(
                 request=request,
@@ -114,6 +120,8 @@ class ChatView(View):
             runtime = build_agent_runtime(plugin_settings)
             result = runtime.run(context, history, page_context)
             tool_calls = result.tool_calls
+            if result.navigation_targets:
+                store_navigation_targets(request, result.navigation_targets)
             if result.rejection is not None:
                 record_rejected_response(
                     user=request.user,
@@ -271,6 +279,7 @@ class ResetConversationView(ChatView):
             return self._json_error("The assistant is not available for this user.", status=403)
 
         clear_pending_actions(request)
+        clear_navigation_targets(request)
         response = JsonResponse(
             {
                 "cleared": True,

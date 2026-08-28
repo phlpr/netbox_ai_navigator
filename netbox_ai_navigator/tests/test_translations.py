@@ -59,3 +59,16 @@ class UITranslationTest(SimpleTestCase):
             labels = [gettext(value) for value in ("Device", "Role", "Site", "Location", "Status")]
 
         self.assertEqual(labels, ["Gerät", "Rolle", "Standort", "Lokation", "Status"])
+
+    def test_translates_ambiguous_navigation_failure(self):
+        with override("de"):
+            message = gettext(
+                "No unique visible navigation target could be resolved. Please specify the exact NetBox object "
+                "and try again."
+            )
+
+        self.assertEqual(
+            message,
+            "Es konnte kein eindeutiges sichtbares Navigationsziel ermittelt werden. Bitte geben Sie das genaue "
+            "NetBox-Objekt an und versuchen Sie es erneut.",
+        )

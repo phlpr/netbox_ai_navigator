@@ -298,6 +298,7 @@ class CurrentUserRBACIntegrationTest(TestCase):
         )
 
         self.assertEqual(result["client_action"]["url"], self.visible_site.get_absolute_url())
+        self.assertTrue(result["client_action"]["auto"])
         with self.assertRaises(ToolValidationError):
             self.provider.call_tool(
                 self.context_for(self.limited_user),

@@ -17,7 +17,8 @@ Version 0.3 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It pro
 - a bounded agent loop with at most ten tool calls per request;
 - dynamic read tools for model discovery, schema inspection, filtering, and object lookup;
 - local search across installed NetBox and plugin documentation;
-- verified browser navigation actions for object, list, and global-search pages;
+- permission-verified automatic browser navigation to object, list, and global-search pages, including contextual
+  follow-ups to one previously found object;
 - validated create, update, and delete proposals with an explicit browser confirmation step;
 - NetBox FilterSet semantics and NetBox REST serializers;
 - current-user RBAC via `queryset.restrict(user, "view")` before filtering or lookup;

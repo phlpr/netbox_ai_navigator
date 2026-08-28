@@ -264,8 +264,8 @@ class LocalCurrentUserProvider(ToolProvider):
                 ToolDefinition(
                     name="navigate_to_object",
                     description=(
-                        "Offer a verified browser navigation action for one NetBox object the current user may view. "
-                        "Use only when the user explicitly asks to open, show, or navigate to that object."
+                        "Navigate the browser to one verified NetBox object the current user may view. "
+                        "Use only when the user explicitly asks to open or navigate to that object."
                     ),
                     input_schema={
                         "type": "object",
@@ -280,7 +280,7 @@ class LocalCurrentUserProvider(ToolProvider):
                 ToolDefinition(
                     name="navigate_to_object_list",
                     description=(
-                        "Offer navigation to the list page of a discovered NetBox core or plugin object type. "
+                        "Navigate to the list page of a discovered NetBox core or plugin object type. "
                         "Use only when the user explicitly requests navigation."
                     ),
                     input_schema={
@@ -292,7 +292,7 @@ class LocalCurrentUserProvider(ToolProvider):
                 ),
                 ToolDefinition(
                     name="navigate_to_search",
-                    description="Offer navigation to NetBox global search for an explicit user-requested query.",
+                    description="Navigate to NetBox global search for an explicit user-requested query.",
                     input_schema={
                         "type": "object",
                         "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 200}},
@@ -661,6 +661,7 @@ class LocalCurrentUserProvider(ToolProvider):
                 "type": "navigate",
                 "url": self._safe_local_url(url),
                 "label": str(instance),
+                "auto": True,
             },
         }
 
@@ -681,6 +682,7 @@ class LocalCurrentUserProvider(ToolProvider):
                 "type": "navigate",
                 "url": self._safe_local_url(url),
                 "label": str(model._meta.verbose_name_plural),
+                "auto": True,
             },
         }
 
@@ -692,7 +694,7 @@ class LocalCurrentUserProvider(ToolProvider):
         url = f"{reverse('search')}?{urlencode({'q': query.strip()})}"
         return {
             "query": query.strip(),
-            "client_action": {"type": "navigate", "url": url, "label": query.strip()},
+            "client_action": {"type": "navigate", "url": url, "label": query.strip(), "auto": True},
         }
 
     def _propose_create_object(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:

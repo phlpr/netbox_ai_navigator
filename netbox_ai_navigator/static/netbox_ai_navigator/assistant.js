@@ -70,6 +70,7 @@
       ? `${historyStoragePrefix}${config.storage_token}`
       : null;
   let pending = false;
+  let automaticNavigationScheduled = false;
 
   const root = document.createElement("section");
   root.id = "netbox-ai-navigator";
@@ -610,7 +611,7 @@
     }
   }
 
-  function addNavigationAction(action) {
+  function addNavigationAction(action, allowAutomaticNavigation = true) {
     if (!action || action.type !== "navigate") {
       return;
     }
@@ -630,6 +631,10 @@
     wrapper.appendChild(button);
     messagesElement.appendChild(wrapper);
     messagesElement.scrollTop = messagesElement.scrollHeight;
+    if (allowAutomaticNavigation && action.auto === true && !automaticNavigationScheduled) {
+      automaticNavigationScheduled = true;
+      window.setTimeout(() => window.location.assign(target.href), 200);
+    }
   }
 
   function previewValue(value) {
@@ -883,8 +888,11 @@
       history.push({ role: "assistant", content: data.answer });
       trimHistory();
       persistHistory();
-      (Array.isArray(data.client_actions) ? data.client_actions : []).forEach(addNavigationAction);
-      (Array.isArray(data.pending_actions) ? data.pending_actions : []).forEach(addPendingAction);
+      const responsePendingActions = Array.isArray(data.pending_actions) ? data.pending_actions : [];
+      (Array.isArray(data.client_actions) ? data.client_actions : []).forEach((action) =>
+        addNavigationAction(action, responsePendingActions.length === 0),
+      );
+      responsePendingActions.forEach(addPendingAction);
     } catch (error) {
       loading.remove();
       addMessage("assistant", error.message || translate("assistant_unavailable"), "error");

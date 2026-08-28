@@ -339,6 +339,9 @@ msgstr "Geltungsbereich"
 msgid "The complete result could not be retrieved because additional result pages remain. Please narrow the request or try again."
 msgstr "Das vollständige Ergebnis konnte nicht abgerufen werden, da weitere Ergebnisseiten vorhanden sind. Bitte grenzen Sie die Anfrage ein oder versuchen Sie es erneut."
 
+msgid "No unique visible navigation target could be resolved. Please specify the exact NetBox object and try again."
+msgstr "Es konnte kein eindeutiges sichtbares Navigationsziel ermittelt werden. Bitte geben Sie das genaue NetBox-Objekt an und versuchen Sie es erneut."
+
 msgid "Copy"
 msgstr "Kopieren"
 
