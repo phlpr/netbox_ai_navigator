@@ -17,7 +17,7 @@ def get_ui_translations() -> dict[str, str]:
         "expand_assistant": _("Expand assistant"),
         "restore_assistant": _("Restore assistant size"),
         "clear_conversation": _("Clear conversation"),
-        "close_assistant": _("Close assistant"),
+        "minimize_assistant": _("Minimize assistant"),
         "welcome": _("Ask me about the NetBox data you are permitted to view on this page."),
         "question": _("Question"),
         "placeholder": _("Ask about your NetBox…"),

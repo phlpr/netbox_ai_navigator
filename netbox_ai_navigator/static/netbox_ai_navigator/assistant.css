@@ -31,8 +31,16 @@
   height: 3.25rem;
   justify-content: center;
   margin-left: auto;
-  transition: transform 140ms ease, box-shadow 140ms ease;
+  opacity: 1;
+  transition: opacity 140ms ease, transform 140ms ease, box-shadow 140ms ease, visibility 140ms ease;
+  visibility: visible;
   width: 3.25rem;
+}
+
+.nbai--open .nbai__launcher {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
 }
 
 .nbai__launcher:hover,
@@ -89,9 +97,20 @@
 .nbai__header {
   align-items: center;
   border-bottom: 1px solid var(--nbai-border);
+  cursor: grab;
   display: flex;
   justify-content: space-between;
   padding: 0.8rem 0.9rem;
+  touch-action: none;
+  user-select: none;
+}
+
+.nbai__panel--dragging {
+  transition: none;
+}
+
+.nbai__panel--dragging .nbai__header {
+  cursor: grabbing;
 }
 
 .nbai__header strong,
@@ -108,6 +127,7 @@
 .nbai__actions {
   display: flex;
   gap: 0.2rem;
+  touch-action: auto;
 }
 
 .nbai__icon-button {

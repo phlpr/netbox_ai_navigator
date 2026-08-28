@@ -21,7 +21,7 @@
     expand_assistant: "Expand assistant",
     restore_assistant: "Restore assistant size",
     clear_conversation: "Clear conversation",
-    close_assistant: "Close assistant",
+    minimize_assistant: "Minimize assistant",
     welcome: "Ask me about the NetBox data you are permitted to view on this page.",
     question: "Question",
     placeholder: "Ask about your NetBox…",
@@ -85,14 +85,14 @@
           <small class="nbai__subtitle"></small>
         </div>
         <div class="nbai__actions">
+          <button class="nbai__icon-button nbai__minimize" type="button">
+            <i class="mdi mdi-minus" aria-hidden="true"></i>
+          </button>
           <button class="nbai__icon-button nbai__expand" type="button" aria-pressed="false">
-            <i class="mdi mdi-arrow-expand-all" aria-hidden="true"></i>
+            <i class="mdi mdi-arrow-expand" aria-hidden="true"></i>
           </button>
           <button class="nbai__icon-button nbai__clear" type="button">
             <i class="mdi mdi-refresh" aria-hidden="true"></i>
-          </button>
-          <button class="nbai__icon-button nbai__close" type="button">
-            <i class="mdi mdi-close" aria-hidden="true"></i>
           </button>
         </div>
       </header>
@@ -110,7 +110,8 @@
 
   const launcher = root.querySelector(".nbai__launcher");
   const panel = root.querySelector(".nbai__panel");
-  const closeButton = root.querySelector(".nbai__close");
+  const header = root.querySelector(".nbai__header");
+  const minimizeButton = root.querySelector(".nbai__minimize");
   const clearButton = root.querySelector(".nbai__clear");
   const expandButton = root.querySelector(".nbai__expand");
   const expandIcon = expandButton.querySelector(".mdi");
@@ -120,6 +121,7 @@
   const sendButton = root.querySelector(".nbai__send");
   const subtitleElement = root.querySelector(".nbai__subtitle");
   let panelSizeBeforeExpand = null;
+  let dragState = null;
 
   function updateWriteCapability(canWrite) {
     config.can_write = canWrite === true;
@@ -130,7 +132,7 @@
   panel.setAttribute("aria-label", translate("dialog_label"));
   updateWriteCapability(config.can_write);
   clearButton.setAttribute("aria-label", translate("clear_conversation"));
-  closeButton.setAttribute("aria-label", translate("close_assistant"));
+  minimizeButton.setAttribute("aria-label", translate("minimize_assistant"));
   messagesElement.firstElementChild.textContent = translate("welcome");
   root.querySelector(".nbai__question-label").textContent = translate("question");
   input.placeholder = translate("placeholder");
@@ -144,7 +146,72 @@
     panel.setAttribute("aria-hidden", String(!open));
     if (open) {
       input.focus();
+    } else {
+      launcher.focus();
     }
+  }
+
+  function keepPanelInViewport() {
+    if (panel.style.position !== "fixed") {
+      return;
+    }
+
+    const margin = 8;
+    const rect = panel.getBoundingClientRect();
+    const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+    const left = Math.min(maxLeft, Math.max(margin, rect.left));
+    const top = Math.min(maxTop, Math.max(margin, rect.top));
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+  }
+
+  function startDragging(event) {
+    if (event.button !== 0 || event.target.closest("button")) {
+      return;
+    }
+
+    const rect = panel.getBoundingClientRect();
+    dragState = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+    };
+    panel.style.position = "fixed";
+    panel.style.left = `${rect.left}px`;
+    panel.style.top = `${rect.top}px`;
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+    panel.classList.add("nbai__panel--dragging");
+    header.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function dragPanel(event) {
+    if (!dragState || event.pointerId !== dragState.pointerId) {
+      return;
+    }
+
+    const margin = 8;
+    const maxLeft = Math.max(margin, window.innerWidth - panel.offsetWidth - margin);
+    const maxTop = Math.max(margin, window.innerHeight - panel.offsetHeight - margin);
+    const left = Math.min(maxLeft, Math.max(margin, event.clientX - dragState.offsetX));
+    const top = Math.min(maxTop, Math.max(margin, event.clientY - dragState.offsetY));
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+  }
+
+  function stopDragging(event) {
+    if (!dragState || event.pointerId !== dragState.pointerId) {
+      return;
+    }
+
+    dragState = null;
+    panel.classList.remove("nbai__panel--dragging");
+    if (header.hasPointerCapture(event.pointerId)) {
+      header.releasePointerCapture(event.pointerId);
+    }
+    keepPanelInViewport();
   }
 
   function setExpanded(expanded) {
@@ -160,8 +227,9 @@
     root.classList.toggle("nbai--expanded", expanded);
     expandButton.setAttribute("aria-pressed", String(expanded));
     expandButton.setAttribute("aria-label", translate(expanded ? "restore_assistant" : "expand_assistant"));
-    expandIcon.classList.toggle("mdi-arrow-expand-all", !expanded);
-    expandIcon.classList.toggle("mdi-arrow-collapse-all", expanded);
+    expandIcon.classList.toggle("mdi-arrow-expand", !expanded);
+    expandIcon.classList.toggle("mdi-arrow-collapse", expanded);
+    window.requestAnimationFrame(keepPanelInViewport);
   }
 
   setExpanded(false);
@@ -878,10 +946,16 @@
 
   restoreHistory();
 
-  launcher.addEventListener("click", () => setOpen(!root.classList.contains("nbai--open")));
+  launcher.addEventListener("click", () => setOpen(true));
   expandButton.addEventListener("click", () => setExpanded(!root.classList.contains("nbai--expanded")));
-  closeButton.addEventListener("click", () => setOpen(false));
+  minimizeButton.addEventListener("click", () => setOpen(false));
   clearButton.addEventListener("click", clearConversation);
+  header.addEventListener("pointerdown", startDragging);
+  header.addEventListener("pointermove", dragPanel);
+  header.addEventListener("pointerup", stopDragging);
+  header.addEventListener("pointercancel", stopDragging);
+  panel.addEventListener("pointerup", keepPanelInViewport);
+  window.addEventListener("resize", keepPanelInViewport);
   input.addEventListener("input", resizeInput);
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {

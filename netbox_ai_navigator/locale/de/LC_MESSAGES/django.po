@@ -42,8 +42,8 @@ msgstr "Ursprüngliche Assistentengröße wiederherstellen"
 msgid "Clear conversation"
 msgstr "Unterhaltung zurücksetzen"
 
-msgid "Close assistant"
-msgstr "Assistent schließen"
+msgid "Minimize assistant"
+msgstr "Assistent minimieren"
 
 msgid "Ask me about the NetBox data you are permitted to view on this page."
 msgstr "Fragen Sie mich nach den NetBox-Daten, die Sie auf dieser Seite sehen dürfen."

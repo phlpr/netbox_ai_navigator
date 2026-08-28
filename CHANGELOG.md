@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Replace the close control with minimize/maximize controls, hide the launcher while open, and make the assistant
+  window draggable within the visible NetBox interface.
 - Add localized copy controls to copy-ready fenced response blocks, automatically recognize unfenced multi-line CSV,
   and prompt exact CSV/configuration output into those blocks.
 - Deduplicate global-search identities, route plural follow-up updates through the atomic bulk proposal tool, and
