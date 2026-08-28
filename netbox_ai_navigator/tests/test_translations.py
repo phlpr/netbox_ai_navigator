@@ -16,6 +16,9 @@ class UITranslationTest(SimpleTestCase):
         self.assertEqual(translations["send"], "Senden")
         self.assertEqual(translations["confirm_change"], "Änderung bestätigen")
         self.assertEqual(translations["expand_assistant"], "Assistent vergrößern")
+        self.assertEqual(translations["copy"], "Kopieren")
+        self.assertEqual(translations["copied"], "Kopiert")
+        self.assertEqual(translations["copy_failed"], "Kopieren fehlgeschlagen")
         self.assertEqual(
             read_permission,
             "AI Navigator im Nur-Lese-Modus verwenden",

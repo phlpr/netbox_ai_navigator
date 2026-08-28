@@ -346,6 +346,8 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertIn("every other cell value", system_message["content"])
         self.assertIn("Do not add a concluding claim", system_message["content"])
         self.assertIn("Do not emit raw JSON", system_message["content"])
+        self.assertIn("exact text intended to be copied", system_message["content"])
+        self.assertIn("CSV template", system_message["content"])
 
     def test_replaces_out_of_scope_answer_without_tool_call(self):
         model = FakeModelProvider(

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add localized copy controls to copy-ready fenced response blocks, automatically recognize unfenced multi-line CSV,
+  and prompt exact CSV/configuration output into those blocks.
 - Deduplicate global-search identities, route plural follow-up updates through the atomic bulk proposal tool, and
   recognize concrete identifiers in change requests even without an explicit object-field noun. Reprompt once when
   an explicit change request stops after lookup without creating a validated proposal.

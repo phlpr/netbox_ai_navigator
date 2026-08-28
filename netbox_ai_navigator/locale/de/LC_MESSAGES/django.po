@@ -338,3 +338,12 @@ msgstr "Geltungsbereich"
 
 msgid "The complete result could not be retrieved because additional result pages remain. Please narrow the request or try again."
 msgstr "Das vollständige Ergebnis konnte nicht abgerufen werden, da weitere Ergebnisseiten vorhanden sind. Bitte grenzen Sie die Anfrage ein oder versuchen Sie es erneut."
+
+msgid "Copy"
+msgstr "Kopieren"
+
+msgid "Copied"
+msgstr "Kopiert"
+
+msgid "Copy failed"
+msgstr "Kopieren fehlgeschlagen"

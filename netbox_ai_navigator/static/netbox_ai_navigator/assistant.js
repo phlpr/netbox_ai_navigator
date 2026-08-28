@@ -45,6 +45,9 @@
     change_completed: "The approved change was completed successfully.",
     change_failed: "The approved change could not be completed.",
     approval_failed: "Approval failed with HTTP {status}.",
+    copy: "Copy",
+    copied: "Copied",
+    copy_failed: "Copy failed",
   };
   const translations = {
     ...defaultTranslations,
@@ -163,6 +166,138 @@
 
   setExpanded(false);
 
+  async function copyToClipboard(value) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      try {
+        await navigator.clipboard.writeText(value);
+        return true;
+      } catch (_error) {
+        // Fall through to the compatibility path for non-secure or restricted browser contexts.
+      }
+    }
+
+    const activeElement = document.activeElement;
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.inset = "-1000px auto auto -1000px";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch (_error) {
+      copied = false;
+    } finally {
+      textarea.remove();
+      if (activeElement instanceof HTMLElement) {
+        activeElement.focus();
+      }
+    }
+    return copied;
+  }
+
+  function createCopyButton(value) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "nbai__copy-button";
+    const icon = document.createElement("i");
+    icon.className = "mdi mdi-content-copy";
+    icon.setAttribute("aria-hidden", "true");
+
+    function setState(key, iconName, modifier = "") {
+      const translated = translate(key);
+      icon.className = `mdi ${iconName}`;
+      button.setAttribute("aria-label", translated);
+      button.title = translated;
+      button.classList.toggle("nbai__copy-button--success", modifier === "success");
+      button.classList.toggle("nbai__copy-button--error", modifier === "error");
+    }
+
+    button.appendChild(icon);
+    setState("copy", "mdi-content-copy");
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      const copied = await copyToClipboard(value);
+      setState(
+        copied ? "copied" : "copy_failed",
+        copied ? "mdi-check" : "mdi-alert-circle-outline",
+        copied ? "success" : "error",
+      );
+      button.disabled = false;
+      window.setTimeout(() => setState("copy", "mdi-content-copy"), 1800);
+    });
+    return button;
+  }
+
+  function createCopyBlock(values, language = "", normalizeMarkdownEscapes = false) {
+    const rawValue = values.join("\n");
+    const copyValue = normalizeMarkdownEscapes ? rawValue.replaceAll("\\_", "_") : rawValue;
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    if (language) {
+      code.dataset.language = language;
+    }
+    code.textContent = copyValue;
+    pre.appendChild(code);
+    const wrapper = document.createElement("div");
+    wrapper.className = "nbai__code-block";
+    wrapper.append(createCopyButton(copyValue), pre);
+    return wrapper;
+  }
+
+  function parseCsvRow(value) {
+    const cells = [];
+    let cell = "";
+    let quoted = false;
+    for (let index = 0; index < value.length; index += 1) {
+      const character = value[index];
+      if (character === '"') {
+        if (quoted && value[index + 1] === '"') {
+          cell += '"';
+          index += 1;
+        } else {
+          quoted = !quoted;
+        }
+      } else if (character === "," && !quoted) {
+        cells.push(cell.trim());
+        cell = "";
+      } else {
+        cell += character;
+      }
+    }
+    if (quoted) {
+      return null;
+    }
+    cells.push(cell.trim());
+    return cells;
+  }
+
+  function csvBlockAt(lines, start) {
+    const header = parseCsvRow(lines[start].replaceAll("\\_", "_"));
+    if (
+      !header ||
+      header.length < 2 ||
+      !header.every((cell) => /^[\p{L}_][\p{L}\p{N}_ -]*$/u.test(cell))
+    ) {
+      return null;
+    }
+
+    const values = [lines[start]];
+    let index = start + 1;
+    while (index < lines.length && lines[index].trim()) {
+      const row = parseCsvRow(lines[index].replaceAll("\\_", "_"));
+      if (!row || row.length !== header.length) {
+        break;
+      }
+      values.push(lines[index]);
+      index += 1;
+    }
+    return values.length >= 2 ? {values, nextIndex: index} : null;
+  }
+
   function appendInlineMarkdown(container, text) {
     const pattern = /(\[([^\]]+)]\(([^)\s]+)\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\*([^*\n]+)\*)/g;
     let cursor = 0;
@@ -265,14 +400,14 @@
         if (index < lines.length) {
           index += 1;
         }
-        const pre = document.createElement("pre");
-        const code = document.createElement("code");
-        if (fence[1]) {
-          code.dataset.language = fence[1];
-        }
-        code.textContent = values.join("\n");
-        pre.appendChild(code);
-        container.appendChild(pre);
+        container.appendChild(createCopyBlock(values, fence[1]));
+        continue;
+      }
+
+      const csvBlock = csvBlockAt(lines, index);
+      if (csvBlock) {
+        container.appendChild(createCopyBlock(csvBlock.values, "csv", true));
+        index = csvBlock.nextIndex;
         continue;
       }
 

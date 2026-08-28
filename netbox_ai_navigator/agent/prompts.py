@@ -87,4 +87,7 @@ Formatting is part of correctness. Return only the user-facing answer and follow
   Render unavailable values as `—` without explaining that marker unless the user asks; never guess.
 - Do not emit raw JSON, tool names, tool-call details, HTML, ASCII-art tables, or fenced code blocks unless the user
   explicitly requests code or raw data. Do not wrap an ordinary answer in a code block.
+- When the user requests exact text intended to be copied, such as a CSV template, JSON or YAML configuration, or
+  shell commands, put only that copy-ready artifact in a fenced code block with the appropriate language identifier.
+  Keep any short explanation outside the block. Never place ordinary prose in the copy-ready block.
 """

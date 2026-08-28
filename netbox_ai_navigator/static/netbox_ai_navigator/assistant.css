@@ -172,7 +172,8 @@
 .nbai__message ol,
 .nbai__message pre,
 .nbai__message blockquote,
-.nbai__message .nbai__table-wrap {
+.nbai__message .nbai__table-wrap,
+.nbai__message .nbai__code-block {
   margin: 0 0 0.65rem;
 }
 
@@ -211,6 +212,53 @@
   max-width: 100%;
   overflow-x: auto;
   padding: 0.55rem 0.65rem;
+}
+
+.nbai__code-block {
+  max-width: 100%;
+  position: relative;
+}
+
+.nbai__code-block pre {
+  margin: 0;
+  padding-top: 2.55rem;
+}
+
+.nbai__copy-button {
+  align-items: center;
+  background: var(--nbai-bg);
+  border: 1px solid var(--nbai-border);
+  border-radius: 0.35rem;
+  color: var(--nbai-muted);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.9rem;
+  justify-content: center;
+  min-height: 1.65rem;
+  padding: 0;
+  position: absolute;
+  right: 0.4rem;
+  top: 0.4rem;
+  width: 1.65rem;
+  z-index: 1;
+}
+
+.nbai__copy-button:hover,
+.nbai__copy-button:focus-visible {
+  border-color: var(--nbai-accent);
+  color: var(--nbai-text);
+}
+
+.nbai__copy-button--success {
+  color: var(--tblr-success, #2fb344);
+}
+
+.nbai__copy-button--error {
+  color: var(--tblr-danger, #d63939);
+}
+
+.nbai__copy-button:disabled {
+  cursor: wait;
 }
 
 .nbai__message pre code {

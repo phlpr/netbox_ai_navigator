@@ -41,6 +41,9 @@ def get_ui_translations() -> dict[str, str]:
         "change_completed": _("The approved change was completed successfully."),
         "change_failed": _("The approved change could not be completed."),
         "approval_failed": _("Approval failed with HTTP {status}."),
+        "copy": _("Copy"),
+        "copied": _("Copied"),
+        "copy_failed": _("Copy failed"),
     }
 
 
