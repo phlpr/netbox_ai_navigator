@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Deduplicate global-search identities, route plural follow-up updates through the atomic bulk proposal tool, and
+  recognize concrete identifiers in change requests even without an explicit object-field noun. Reprompt once when
+  an explicit change request stops after lookup without creating a validated proposal.
+- Report safe Responses API incomplete reasons for output-token limits and content filtering.
+- Add deterministic offset pagination to object queries so complete filtered lists can span multiple tool calls.
+
 ## 0.3.0 - 2026-08-27
 
 - Add OpenAI Responses API support and validated deployment-specific headers to the general OpenAI-compatible

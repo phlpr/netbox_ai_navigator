@@ -48,6 +48,14 @@ NETBOX_CHANGE_SUBJECT_RE = re.compile(
 )
 COMPACT_NUMERIC_RANGE_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_.-]*\d+\s*(?:-|–|—)\s*\d+\b")
 OBJECT_IDENTIFIER_RE = re.compile(r"(?<!\w)[A-Za-z][A-Za-z0-9_.-]*\d[A-Za-z0-9_.-]*(?!\w)")
+MULTI_OBJECT_REFERENCE_RE = re.compile(
+    r"\b(?:both|all|these|those|them|beide[nrms]?|alle[nrms]?|diese[nrms]?|jene[nrms]?)\b",
+    re.IGNORECASE,
+)
+COMPLETE_LIST_REQUEST_RE = re.compile(
+    r"\b(?:all|every|complete|alle[nrms]?|sämtliche[nrms]?|saemtliche[nrms]?|vollständig(?:e[nrms]?)?)\b",
+    re.IGNORECASE,
+)
 EMPTY_TABLE_VALUES = frozenset({"", "-", "—", "n/a", "none", "null"})
 DISCOVERY_ONLY_RECORD_KEYS = frozenset({"id", "display", "display_url", "object_type"})
 MAX_AUTOMATIC_HYDRATION_OBJECTS = 20
@@ -209,8 +217,10 @@ class AgentRuntime:
                         "describe_object_type, then call the matching proposal tool without asking for separate "
                         "preliminary confirmation. For multiple exact named update targets of "
                         "one type, call propose_bulk_update_named_objects once with every name; never call or emulate "
-                        "a series of single-object proposals. Every returned preview requires its own manual browser "
-                        "confirmation. Do not stage a partial batch if a target is unresolved or the configured "
+                        "a series of single-object proposals. Follow-up references such as both, all, or these must "
+                        "reuse the exact object names from the conversation in that one bulk call. Every returned "
+                        "preview requires its own manual browser confirmation. Do not stage a partial batch if a "
+                        "target is unresolved or the configured "
                         "limit would be exceeded."
                         + (
                             " This request contains multiple update targets. The single-object update tool is "
@@ -245,7 +255,11 @@ class AgentRuntime:
         pending_action_identities: set[tuple[Any, ...]] = set()
         proposal_limit_exceeded = False
         non_atomic_batch_rejected = False
+        write_proposal_attempted = False
         search_refinement_requested = False
+        proposal_refinement_requested = False
+        pending_query_offset: int | None = None
+        pagination_refinement_offsets: set[int] = set()
         data_refresh_requested = False
         force_grounded_fallback = False
 
@@ -256,6 +270,8 @@ class AgentRuntime:
 
                 messages.append(response.as_assistant_message())
                 for tool_call in response.tool_calls:
+                    if tool_call.name.startswith("propose_"):
+                        write_proposal_attempted = True
                     if tool_call_count >= self.max_tool_calls:
                         result = {"ok": False, "error": "The maximum number of tool calls has been reached."}
                     else:
@@ -267,6 +283,12 @@ class AgentRuntime:
                         tool_result = result.get("result") if result.get("ok") else None
                         candidate_pending_actions: list[dict[str, Any]] = []
                         if isinstance(tool_result, dict):
+                            if tool_call.name == "query_objects":
+                                next_offset = tool_result.get("next_offset")
+                                if tool_result.get("has_more") is True and isinstance(next_offset, int):
+                                    pending_query_offset = next_offset
+                                elif tool_result.get("has_more") is False:
+                                    pending_query_offset = None
                             single_pending_action = tool_result.get("pending_action")
                             multiple_pending_actions = tool_result.get("pending_actions")
                             if isinstance(single_pending_action, dict) and multiple_pending_actions is None:
@@ -384,6 +406,57 @@ class AgentRuntime:
                         force_grounded_fallback = True
                     forced_final = tool_call_count >= self.max_tool_calls
 
+                needs_proposal_refinement = (
+                    not forced_final
+                    and not proposal_refinement_requested
+                    and write_proposals_available
+                    and not write_proposal_attempted
+                    and not pending_actions
+                    and not client_actions
+                    and self._looks_like_change_request(normalized_history[-1]["content"])
+                )
+                if needs_proposal_refinement:
+                    proposal_refinement_requested = True
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "The user explicitly requested a NetBox change, but no validated change proposal "
+                                "has been created. A lookup or object list does not complete a change request. Use "
+                                "the available propose_* tool now with the exact resolved target and requested "
+                                "value. For multiple targets, use one atomic bulk proposal. If the request cannot "
+                                "be proposed unambiguously, explain the specific missing information without "
+                                "claiming that a change was made."
+                            ),
+                        }
+                    )
+                    response = self.model_provider.complete(messages, model_tools)
+                    continue
+
+                needs_pagination_refinement = (
+                    not forced_final
+                    and pending_query_offset is not None
+                    and pending_query_offset not in pagination_refinement_offsets
+                    and COMPLETE_LIST_REQUEST_RE.search(normalized_history[-1]["content"])
+                    and not pending_actions
+                    and not client_actions
+                )
+                if needs_pagination_refinement:
+                    pagination_refinement_offsets.add(pending_query_offset)
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "The user requested the complete result, but the latest query_objects page reports "
+                                f"has_more=true. Do not answer yet. Repeat the exact same query now with offset "
+                                f"{pending_query_offset}; preserve its object_type, filters, fields, order_by, and "
+                                "limit. Continue until has_more=false."
+                            ),
+                        }
+                    )
+                    response = self.model_provider.complete(messages, model_tools)
+                    continue
+
                 answer_needs_data_refresh = (
                     not forced_final
                     and not data_refresh_requested
@@ -472,6 +545,14 @@ class AgentRuntime:
                 extra={"grounding_records": len(grounding_records)},
             )
             answer = self._grounded_fallback(grounding_records)
+        elif pending_query_offset is not None and COMPLETE_LIST_REQUEST_RE.search(
+            normalized_history[-1]["content"]
+        ):
+            rejection_reason = RejectionReason.GROUNDING_GUARD
+            answer = _(
+                "The complete result could not be retrieved because additional result pages remain. "
+                "Please narrow the request or try again."
+            )
         else:
             try:
                 self._validate_grounding(
@@ -527,11 +608,22 @@ class AgentRuntime:
 
     @staticmethod
     def _looks_like_change_request(user_message: str) -> bool:
-        return bool(CHANGE_INTENT_RE.search(user_message) and NETBOX_CHANGE_SUBJECT_RE.search(user_message))
+        return bool(
+            CHANGE_INTENT_RE.search(user_message)
+            and (
+                NETBOX_CHANGE_SUBJECT_RE.search(user_message)
+                or MULTI_OBJECT_REFERENCE_RE.search(user_message)
+                or OBJECT_IDENTIFIER_RE.search(user_message)
+            )
+        )
 
     @classmethod
     def _looks_like_multi_object_update_request(cls, user_message: str) -> bool:
-        if not UPDATE_INTENT_RE.search(user_message) or not NETBOX_CHANGE_SUBJECT_RE.search(user_message):
+        if not UPDATE_INTENT_RE.search(user_message):
+            return False
+        if MULTI_OBJECT_REFERENCE_RE.search(user_message):
+            return True
+        if not NETBOX_CHANGE_SUBJECT_RE.search(user_message):
             return False
         if COMPACT_NUMERIC_RANGE_RE.search(user_message):
             return True

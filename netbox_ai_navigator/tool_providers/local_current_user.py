@@ -27,6 +27,7 @@ IDENTITY_FIELDS = ("id", "display", "display_url")
 MAX_WRITE_PAYLOAD_CHARS = 20000
 CHANGELOG_MESSAGE = "Changed through NetBox AI Navigator after explicit user confirmation."
 HAS_CONTACT_FILTER = "has_contact"
+MAX_QUERY_OFFSET = 10_000
 
 # These restrictions are deliberately not configurable. Dynamic discovery must
 # never turn a newly installed model into a credential-reading side channel.
@@ -158,8 +159,10 @@ class LocalCurrentUserProvider(ToolProvider):
                     "or location, first query dcim.site or dcim.location with q, then filter the target object type "
                     "by the returned site_id or location_id. A target object's q filter does not necessarily search "
                     "related objects. Relationship filters such as site and location accept registered choices, not "
-                    "unverified free text. Call describe_object_type first when other filter or field names are "
-                    "uncertain."
+                    "unverified free text. Results are paginated: for a complete or 'all' request, start at offset "
+                    "0 and repeat the exact same query with next_offset while has_more is true. Never describe a "
+                    "page as the complete result. Call describe_object_type first when other filter or field names "
+                    "are uncertain."
                 ),
                 input_schema={
                     "type": "object",
@@ -180,6 +183,7 @@ class LocalCurrentUserProvider(ToolProvider):
                         "fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": True},
                         "order_by": {"type": "array", "items": {"type": "string"}, "uniqueItems": True},
                         "limit": {"type": "integer", "minimum": 1, "maximum": self.max_results},
+                        "offset": {"type": "integer", "minimum": 0, "maximum": MAX_QUERY_OFFSET},
                     },
                     "required": ["object_type"],
                     "additionalProperties": False,
@@ -484,7 +488,7 @@ class LocalCurrentUserProvider(ToolProvider):
         }
 
     def _query_objects(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"object_type", "filters", "fields", "order_by", "limit"}
+        allowed = {"object_type", "filters", "fields", "order_by", "limit", "offset"}
         self._require_arguments(arguments, {"object_type"}, allowed)
         label = self._normalize_label(arguments["object_type"])
         model, filterset_class, serializer_class = self._resolve(label, context)
@@ -519,13 +523,21 @@ class LocalCurrentUserProvider(ToolProvider):
 
         ordering = arguments.get("order_by") or []
         if ordering:
-            queryset = queryset.order_by(*self._validate_ordering(model, serializer_class, context, ordering))
+            queryset = queryset.order_by(
+                *self._validate_ordering(model, serializer_class, context, ordering),
+                "pk",
+            )
+        else:
+            queryset = queryset.order_by("pk")
 
         limit = arguments.get("limit", self.max_results)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= self.max_results:
             raise ToolValidationError(f"limit must be between 1 and {self.max_results}.")
+        offset = arguments.get("offset", 0)
+        if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= MAX_QUERY_OFFSET:
+            raise ToolValidationError(f"offset must be between 0 and {MAX_QUERY_OFFSET}.")
 
-        objects = list(queryset[: limit + 1])
+        objects = list(queryset[offset : offset + limit + 1])
         has_more = len(objects) > limit
         objects = objects[:limit]
         serialized = serializer_class(
@@ -538,7 +550,9 @@ class LocalCurrentUserProvider(ToolProvider):
             "object_type": label,
             "returned": len(objects),
             "limit": limit,
+            "offset": offset,
             "has_more": has_more,
+            "next_offset": offset + len(objects) if has_more else None,
             "objects": [self._sanitize_serialized_value(item) for item in serialized],
         }
 
@@ -578,15 +592,20 @@ class LocalCurrentUserProvider(ToolProvider):
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
             raise ToolValidationError("limit must be between 1 and 20.")
         results = []
+        seen_objects: set[tuple[str, Any]] = set()
         for match in search_backend.search(query.strip(), user=context.user):
             instance = getattr(match, "object", None)
             label = getattr(getattr(instance, "_meta", None), "label_lower", None)
             if instance is None or label not in self._capabilities:
                 continue
+            identity = (label, instance.pk)
+            if identity in seen_objects:
+                continue
             try:
                 display_url = self._safe_local_url(instance.get_absolute_url())
             except (AttributeError, ToolValidationError):
                 continue
+            seen_objects.add(identity)
             results.append(
                 {
                     "id": instance.pk,

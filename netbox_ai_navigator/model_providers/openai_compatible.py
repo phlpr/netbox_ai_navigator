@@ -248,8 +248,17 @@ class OpenAICompatibleProvider(ModelProvider):
             raise ProviderError("The model provider returned an invalid response.")
         if data.get("error"):
             raise ProviderError("The model provider returned a failed response.")
-        if data.get("status") in {"cancelled", "failed", "incomplete"}:
-            raise ProviderError(f"The model provider returned a {data['status']} response.")
+        status = data.get("status")
+        if status == "incomplete":
+            details = data.get("incomplete_details")
+            reason = details.get("reason") if isinstance(details, dict) else None
+            if reason == "max_output_tokens":
+                raise ProviderError("The model provider reached the configured output token limit.")
+            if reason == "content_filter":
+                raise ProviderError("The model provider returned an incomplete response due to content filtering.")
+            raise ProviderError("The model provider returned an incomplete response.")
+        if status in {"cancelled", "failed"}:
+            raise ProviderError(f"The model provider returned a {status} response.")
 
         text_parts: list[str] = []
         tool_calls: list[ModelToolCall] = []

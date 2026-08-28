@@ -213,6 +213,83 @@ class CurrentUserRBACIntegrationTest(TestCase):
                 },
             )
 
+    def test_contact_filter_handles_more_than_one_result_page(self):
+        names = ["SPSQLPROD001", "SPSQLPROD002", "SPSQLPROD003"] + [
+            f"LAB-VM-{number:03d}" for number in range(4, 61)
+        ]
+        virtual_machines = VirtualMachine.objects.bulk_create(
+            [VirtualMachine(name=name, status="active") for name in names]
+        )
+        contact = Contact.objects.create(name="Fictional Lab Operations")
+        role = ContactRole.objects.create(name="Fictional Lab Owner", slug="fictional-lab-owner")
+        mapped_names = {"LAB-VM-015", "LAB-VM-030", "LAB-VM-045", "LAB-VM-060"}
+        ContactAssignment.objects.bulk_create(
+            [
+                ContactAssignment(object=vm, contact=contact, role=role)
+                for vm in virtual_machines
+                if vm.name in mapped_names
+            ]
+        )
+        provider = LocalCurrentUserProvider(
+            {"allowed_object_types": ["virtualization.virtualmachine"], "max_results": 50}
+        )
+
+        unmapped = provider.call_tool(
+            self.context_for(self.superuser),
+            "query_objects",
+            {
+                "object_type": "virtualization.virtualmachine",
+                "filters": {"has_contact": False},
+                "fields": ["name"],
+                "order_by": ["name"],
+            },
+        )
+        mapped = provider.call_tool(
+            self.context_for(self.superuser),
+            "query_objects",
+            {
+                "object_type": "virtualization.virtualmachine",
+                "filters": {"has_contact": True},
+                "fields": ["name"],
+                "order_by": ["name"],
+            },
+        )
+        remaining_unmapped = provider.call_tool(
+            self.context_for(self.superuser),
+            "query_objects",
+            {
+                "object_type": "virtualization.virtualmachine",
+                "filters": {"has_contact": False},
+                "fields": ["name"],
+                "order_by": ["name"],
+                "offset": unmapped["next_offset"],
+            },
+        )
+
+        self.assertEqual(unmapped["returned"], 50)
+        self.assertTrue(unmapped["has_more"])
+        self.assertEqual(unmapped["next_offset"], 50)
+        self.assertEqual(remaining_unmapped["returned"], 6)
+        self.assertFalse(remaining_unmapped["has_more"])
+        self.assertIsNone(remaining_unmapped["next_offset"])
+        self.assertEqual(
+            len({item["name"] for item in [*unmapped["objects"], *remaining_unmapped["objects"]]}),
+            56,
+        )
+        self.assertEqual([item["name"] for item in mapped["objects"]], sorted(mapped_names))
+        self.assertFalse(mapped["has_more"])
+
+        with self.assertRaisesMessage(ToolValidationError, "offset must be between"):
+            provider.call_tool(
+                self.context_for(self.superuser),
+                "query_objects",
+                {
+                    "object_type": "virtualization.virtualmachine",
+                    "filters": {"has_contact": False},
+                    "offset": -1,
+                },
+            )
+
     def test_navigation_only_targets_visible_object(self):
         result = self.provider.call_tool(
             self.context_for(self.limited_user),

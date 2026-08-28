@@ -249,30 +249,33 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
         self.assertEqual(result["client_action"]["url"], "/search/?q=edge+router")
 
     @patch("netbox_ai_navigator.tool_providers.local_current_user.search_backend.search")
-    def test_global_search_returns_only_discovered_object_identity(self, search):
+    def test_global_search_returns_only_one_discovered_identity_per_object(self, search):
+        complex_name = "++ATOBE+NDB.G00-4-B02--PoE01"
+
         class DeviceResult:
             pk = 42
             _meta = SimpleNamespace(label_lower="dcim.device")
 
             def __str__(self):
-                return "edge-router-01"
+                return complex_name
 
             def get_absolute_url(self):
                 return "/dcim/devices/42/"
 
-        search.return_value = [SimpleNamespace(object=DeviceResult())]
+        result_match = SimpleNamespace(object=DeviceResult())
+        search.return_value = [result_match, result_match]
 
-        result = self.provider._search_netbox(self.context, {"query": "edge-router"})
+        result = self.provider._search_netbox(self.context, {"query": complex_name})
 
         self.assertEqual(
             result["objects"],
             [
                 {
                     "id": 42,
-                    "display": "edge-router-01",
+                    "display": complex_name,
                     "display_url": "/dcim/devices/42/",
                     "object_type": "dcim.device",
                 }
             ],
         )
-        search.assert_called_once_with("edge-router", user=self.context.user)
+        search.assert_called_once_with(complex_name, user=self.context.user)

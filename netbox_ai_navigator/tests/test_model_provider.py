@@ -317,6 +317,39 @@ class OpenAICompatibleProviderTest(SimpleTestCase):
         self.assertNotIn("previous_response_id", session.calls[1][1]["json"])
         self.assertEqual(result.content, "Refined answer")
 
+    def test_responses_reports_output_token_limit_without_exposing_response_data(self):
+        session = FakeSession(
+            FakeResponse(
+                {
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output": [],
+                    "private": "must-not-be-exposed",
+                }
+            )
+        )
+        provider = OpenAICompatibleProvider({**self.config, "protocol": "responses"}, session=session)
+
+        with self.assertRaisesMessage(ProviderError, "configured output token limit") as raised:
+            provider.complete([{"role": "user", "content": "List VMs"}], [])
+
+        self.assertNotIn("must-not-be-exposed", str(raised.exception))
+
+    def test_responses_reports_content_filter_incomplete_reason(self):
+        session = FakeSession(
+            FakeResponse(
+                {
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "content_filter"},
+                    "output": [],
+                }
+            )
+        )
+        provider = OpenAICompatibleProvider({**self.config, "protocol": "responses"}, session=session)
+
+        with self.assertRaisesMessage(ProviderError, "due to content filtering"):
+            provider.complete([{"role": "user", "content": "List VMs"}], [])
+
     def test_rejects_reserved_or_injected_extra_headers(self):
         with self.assertRaisesMessage(ProviderError, "reserved"):
             OpenAICompatibleProvider({**self.config, "extra_headers": {"Authorization": "replacement"}})

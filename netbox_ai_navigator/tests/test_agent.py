@@ -215,6 +215,44 @@ class FakeActionToolProvider(ToolProvider):
         raise ToolNotFoundError(name)
 
 
+class FakePagedVMToolProvider(ToolProvider):
+    def __init__(self):
+        self.calls = []
+
+    def list_tools(self, context):
+        return [
+            ToolDefinition(
+                name="query_objects",
+                description="Query paginated test VMs.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": True},
+            )
+        ]
+
+    def call_tool(self, context, name, arguments):
+        if name != "query_objects":
+            raise ToolNotFoundError(name)
+        self.calls.append(arguments)
+        offset = arguments.get("offset", 0)
+        names = ["SPSQLPROD001", "SPSQLPROD002"] if offset == 0 else ["LAB-VM-059"]
+        return {
+            "object_type": "virtualization.virtualmachine",
+            "returned": len(names),
+            "limit": 2,
+            "offset": offset,
+            "has_more": offset == 0,
+            "next_offset": 2 if offset == 0 else None,
+            "objects": [
+                {
+                    "id": index,
+                    "display": value,
+                    "name": value,
+                    "display_url": f"http://testserver/virtualization/virtual-machines/{index}/",
+                }
+                for index, value in enumerate(names, start=offset + 1)
+            ],
+        }
+
+
 GRAZ_DEVICES = [
     {
         "id": 4,
@@ -475,6 +513,27 @@ class AgentRuntimeTest(SimpleTestCase):
             "3 requested changes were validated. Each change is awaiting separate manual confirmation.",
         )
 
+    def test_plural_followup_reference_requires_atomic_bulk_tool(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(content="No proposal was created."),
+                ModelResponse(content="The exact object names are required."),
+            ]
+        )
+
+        AgentRuntime(model, FakeBulkWriteToolProvider()).run(
+            self.context,
+            [
+                {"role": "user", "content": "Show the matching devices."},
+                {"role": "assistant", "content": "Device A and Device B"},
+                {"role": "user", "content": "Setze beide auf planned"},
+            ],
+        )
+
+        exposed_tool_names = {tool["function"]["name"] for tool in model.calls[0][1]}
+        self.assertNotIn("propose_update_object", exposed_tool_names)
+        self.assertIn("propose_bulk_update_named_objects", exposed_tool_names)
+
     def test_rejects_single_update_tool_when_bulk_request_requires_atomic_tool(self):
         model = FakeModelProvider(
             [
@@ -537,7 +596,12 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertEqual(result.pending_actions, ())
 
     def test_returns_change_specific_failure_when_write_model_does_not_use_tools(self):
-        model = FakeModelProvider([ModelResponse(content="This is not a NetBox request.")])
+        model = FakeModelProvider(
+            [
+                ModelResponse(content="This is not a NetBox request."),
+                ModelResponse(content="I still cannot create a proposal."),
+            ]
+        )
 
         result = AgentRuntime(model, FakeWriteToolProvider()).run(
             self.context,
@@ -549,6 +613,104 @@ class AgentRuntimeTest(SimpleTestCase):
             "No validated change proposal could be created. Please verify the exact NetBox object names and "
             "requested value, then try again.",
         )
+
+    def test_reprompts_once_when_change_request_stops_after_lookup(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(content="The device was found."),
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "change-1",
+                            "propose_update_object",
+                            {"object_id": 4, "data": {"status": "planned"}},
+                        )
+                    ]
+                ),
+                ModelResponse(content="The change is ready."),
+            ]
+        )
+
+        result = AgentRuntime(model, FakeWriteToolProvider()).run(
+            self.context,
+            [
+                {
+                    "role": "user",
+                    "content": "Setze ++ATOBE+NDB.G00-4-B02--PoE01 auf planned",
+                }
+            ],
+        )
+
+        refinement_messages = [
+            message
+            for message in model.calls[1][0]
+            if message["role"] == "system" and message["content"].startswith("The user explicitly requested")
+        ]
+        self.assertEqual(len(refinement_messages), 1)
+        self.assertEqual(len(result.pending_actions), 1)
+        self.assertEqual(result.answer, "The requested change was validated and is awaiting manual confirmation.")
+
+    def test_fetches_remaining_pages_for_complete_list_request(self):
+        final_answer = "\n".join(
+            (
+                "| VM | ID |",
+                "| --- | --- |",
+                "| [SPSQLPROD001](http://testserver/virtualization/virtual-machines/1/) | 1 |",
+                "| [SPSQLPROD002](http://testserver/virtualization/virtual-machines/2/) | 2 |",
+                "| [LAB-VM-059](http://testserver/virtualization/virtual-machines/3/) | 3 |",
+            )
+        )
+        model = FakeModelProvider(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "page-1",
+                            "query_objects",
+                            {
+                                "object_type": "virtualization.virtualmachine",
+                                "filters": {"has_contact": False},
+                                "fields": ["name"],
+                                "limit": 2,
+                            },
+                        )
+                    ]
+                ),
+                ModelResponse(content="Here are the first two VMs."),
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "page-2",
+                            "query_objects",
+                            {
+                                "object_type": "virtualization.virtualmachine",
+                                "filters": {"has_contact": False},
+                                "fields": ["name"],
+                                "limit": 2,
+                                "offset": 2,
+                            },
+                        )
+                    ]
+                ),
+                ModelResponse(content=final_answer),
+            ]
+        )
+        tools = FakePagedVMToolProvider()
+
+        result = AgentRuntime(model, tools).run(
+            self.context,
+            [{"role": "user", "content": "Suche mir alle VMs ohne Kontakt-Mapping"}],
+        )
+
+        self.assertEqual(result.answer, final_answer)
+        self.assertEqual(result.tool_calls, 2)
+        self.assertEqual([call.get("offset", 0) for call in tools.calls], [0, 2])
+        pagination_messages = [
+            message
+            for message in model.calls[2][0]
+            if message["role"] == "system" and message["content"].startswith("The user requested the complete")
+        ]
+        self.assertEqual(len(pagination_messages), 1)
 
     def test_returns_read_only_failure_for_recognized_change_request(self):
         model = FakeModelProvider([ModelResponse(content="This is not a NetBox request.")])
