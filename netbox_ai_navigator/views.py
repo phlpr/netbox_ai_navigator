@@ -35,8 +35,10 @@ from .session_state import (
     clear_navigation_targets,
     clear_pending_actions,
     discard_pending_action,
+    get_list_navigation_targets,
     get_navigation_targets,
     pop_pending_action,
+    store_list_navigation_targets,
     store_navigation_targets,
     store_pending_action,
 )
@@ -109,6 +111,9 @@ class ChatView(View):
             previous_navigation_targets = get_navigation_targets(request)
             if previous_navigation_targets:
                 page_context["previous_navigation_targets"] = previous_navigation_targets
+            previous_list_navigation_targets = get_list_navigation_targets(request)
+            if previous_list_navigation_targets:
+                page_context["previous_list_navigation_targets"] = previous_list_navigation_targets
             can_write = user_can_write_assistant(request.user, plugin_settings)
             context = ToolContext(
                 request=request,
@@ -122,6 +127,8 @@ class ChatView(View):
             tool_calls = result.tool_calls
             if result.navigation_targets:
                 store_navigation_targets(request, result.navigation_targets)
+            if result.list_navigation_targets:
+                store_list_navigation_targets(request, result.list_navigation_targets)
             if result.rejection is not None:
                 record_rejected_response(
                     user=request.user,

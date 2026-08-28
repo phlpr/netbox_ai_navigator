@@ -96,6 +96,13 @@ class NavigationContextRuntime(FakeRuntime):
                         "label": "Fictional Lab Operations",
                     },
                 ),
+                list_navigation_targets=(
+                    {
+                        "object_type": "tenancy.contact",
+                        "filters": {"q": "Fictional Lab Operations"},
+                        "object_ids": [7],
+                    },
+                ),
             )
         return AgentResult(answer="Opening the contact.", tool_calls=1)
 
@@ -163,6 +170,16 @@ class ChatViewTest(SimpleTestCase):
                     "object_type": "tenancy.contact",
                     "object_id": 7,
                     "label": "Fictional Lab Operations",
+                }
+            ],
+        )
+        self.assertEqual(
+            runtime.page_contexts[1]["previous_list_navigation_targets"],
+            [
+                {
+                    "object_type": "tenancy.contact",
+                    "filters": {"q": "Fictional Lab Operations"},
+                    "object_ids": [7],
                 }
             ],
         )
@@ -297,6 +314,9 @@ class ResetConversationViewTest(SimpleTestCase):
             "netbox_ai_navigator_navigation_targets": [
                 {"object_type": "dcim.device", "object_id": 1, "label": "device-01"}
             ],
+            "netbox_ai_navigator_list_navigation_targets": [
+                {"object_type": "dcim.device", "filters": {"has_contact": False}, "object_ids": [1]}
+            ],
         }
 
         response = ResetConversationView.as_view()(request)
@@ -306,6 +326,7 @@ class ResetConversationViewTest(SimpleTestCase):
         self.assertFalse(payload["can_write"])
         self.assertNotIn("netbox_ai_navigator_pending_actions", request.session)
         self.assertNotIn("netbox_ai_navigator_navigation_targets", request.session)
+        self.assertNotIn("netbox_ai_navigator_list_navigation_targets", request.session)
 
 
 @override_settings(

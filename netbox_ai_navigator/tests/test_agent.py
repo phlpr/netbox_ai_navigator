@@ -231,6 +231,11 @@ class FakeNavigationToolProvider(ToolProvider):
                 description="Navigate to one test object.",
                 input_schema={"type": "object", "properties": {}, "additionalProperties": True},
             ),
+            ToolDefinition(
+                name="navigate_to_object_list",
+                description="Navigate to a test object list.",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": True},
+            ),
         ]
 
     def call_tool(self, context, name, arguments):
@@ -254,6 +259,15 @@ class FakeNavigationToolProvider(ToolProvider):
                     "type": "navigate",
                     "url": "/tenancy/contacts/7/",
                     "label": "Fictional Lab Operations",
+                    "auto": True,
+                }
+            }
+        if name == "navigate_to_object_list":
+            return {
+                "client_action": {
+                    "type": "navigate",
+                    "url": "/dcim/devices/?id=4&id=3",
+                    "label": "Devices",
                     "auto": True,
                 }
             }
@@ -395,9 +409,7 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertIn("CSV template", system_message["content"])
 
     def test_replaces_out_of_scope_answer_without_tool_call(self):
-        model = FakeModelProvider(
-            [ModelResponse(content="Use list.sort() or sorted() to sort a Python list.")]
-        )
+        model = FakeModelProvider([ModelResponse(content="Use list.sort() or sorted() to sort a Python list.")])
 
         result = AgentRuntime(model, FakeToolProvider()).run(
             self.context,
@@ -453,9 +465,7 @@ class AgentRuntimeTest(SimpleTestCase):
     def test_pending_change_uses_deterministic_confirmation_answer(self):
         model = FakeModelProvider(
             [
-                ModelResponse(
-                    tool_calls=[ModelToolCall("change", "propose_update_object", {"status": "active"})]
-                ),
+                ModelResponse(tool_calls=[ModelToolCall("change", "propose_update_object", {"status": "active"})]),
                 ModelResponse(content="The object was already updated."),
             ]
         )
@@ -477,9 +487,7 @@ class AgentRuntimeTest(SimpleTestCase):
         confirmation = "The requested change was validated and is awaiting manual confirmation."
         model = FakeModelProvider(
             [
-                ModelResponse(
-                    tool_calls=[ModelToolCall("change", "propose_update_object", {"status": "active"})]
-                ),
+                ModelResponse(tool_calls=[ModelToolCall("change", "propose_update_object", {"status": "active"})]),
                 ModelResponse(content=confirmation),
             ]
         )
@@ -752,6 +760,16 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertEqual(result.answer, final_answer)
         self.assertEqual(result.tool_calls, 2)
         self.assertEqual([call.get("offset", 0) for call in tools.calls], [0, 2])
+        self.assertEqual(
+            result.list_navigation_targets,
+            (
+                {
+                    "object_type": "virtualization.virtualmachine",
+                    "filters": {"has_contact": False},
+                    "object_ids": [1, 2, 3],
+                },
+            ),
+        )
         pagination_messages = [
             message
             for message in model.calls[2][0]
@@ -1351,6 +1369,82 @@ Both devices are used in the **GeoView Test Lab** environment."""
         )
         self.assertEqual(result.client_actions, ())
 
+    def test_filtered_list_navigation_reuses_server_verified_query_context(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "navigate-list",
+                            "navigate_to_object_list",
+                            {"object_type": "dcim.device"},
+                        )
+                    ]
+                ),
+                ModelResponse(content="Opening the filtered device list."),
+            ]
+        )
+        tools = FakeNavigationToolProvider()
+        previous_target = {
+            "object_type": "dcim.device",
+            "filters": {"has_contact": False},
+            "object_ids": [4, 3],
+        }
+
+        result = AgentRuntime(model, tools).run(
+            self.context,
+            [{"role": "user", "content": "Öffne die gefilterte Device-Liste"}],
+            {"previous_list_navigation_targets": [previous_target]},
+        )
+
+        self.assertEqual(
+            tools.calls,
+            [
+                (
+                    "navigate_to_object_list",
+                    {
+                        "object_type": "dcim.device",
+                        "filters": {"has_contact": False},
+                        "object_ids": [4, 3],
+                    },
+                )
+            ],
+        )
+        self.assertEqual(result.client_actions[0]["url"], "/dcim/devices/?id=4&id=3")
+
+    def test_plain_list_navigation_does_not_reuse_previous_filter(self):
+        model = FakeModelProvider(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ModelToolCall(
+                            "navigate-list",
+                            "navigate_to_object_list",
+                            {"object_type": "dcim.device"},
+                        )
+                    ]
+                ),
+                ModelResponse(content="Opening the device list."),
+            ]
+        )
+        tools = FakeNavigationToolProvider()
+
+        AgentRuntime(model, tools).run(
+            self.context,
+            [{"role": "user", "content": "Öffne die Device-Liste"}],
+            {
+                "previous_list_navigation_targets": [
+                    {
+                        "object_type": "dcim.device",
+                        "filters": {"has_contact": False},
+                        "object_ids": [4, 3],
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(tools.calls, [("navigate_to_object_list", {"object_type": "dcim.device"})])
+
     def test_exposes_answered_object_as_contextual_navigation_target(self):
         device = GRAZ_DEVICES[0]
         answer = f"Found [{device['display']}]({device['display_url']})."
@@ -1373,6 +1467,16 @@ Both devices are used in the **GeoView Test Lab** environment."""
                     "object_type": "dcim.device",
                     "object_id": device["id"],
                     "label": device["display"],
+                },
+            ),
+        )
+        self.assertEqual(
+            result.list_navigation_targets,
+            (
+                {
+                    "object_type": "dcim.device",
+                    "filters": {},
+                    "object_ids": [device["id"]],
                 },
             ),
         )

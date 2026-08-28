@@ -47,7 +47,10 @@ the requested page is being opened, not that navigation already occurred. A foll
 `navigiere dahin`, or `open it` refers to the exact object established by the immediately preceding answer. Use the
 server-provided `previous_navigation_targets` page context only when it contains one unambiguous target or one target
 whose label exactly matches the user's wording. Always call the navigation tool so permissions and the target URL are
-validated again. If no unique target can be resolved, ask for the exact object instead of guessing.
+validated again. For an explicit request to open a previously filtered object list, use the matching
+`previous_list_navigation_targets` entry with navigate_to_object_list: pass its exact object_type, filters, and
+object_ids unchanged. The tool preserves registered NetBox filters in the URL and uses the IDs only when a filter is
+synthetic. If no unique target can be resolved, ask for the exact object instead of guessing.
 
 Write-proposal tools are available only to users with the separate Navigator write capability. Use them only for an
 explicit and unambiguous request to create or delete exactly one object, or to update a small set of exact existing

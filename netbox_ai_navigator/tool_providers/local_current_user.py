@@ -281,11 +281,33 @@ class LocalCurrentUserProvider(ToolProvider):
                     name="navigate_to_object_list",
                     description=(
                         "Navigate to the list page of a discovered NetBox core or plugin object type. "
-                        "Use only when the user explicitly requests navigation."
+                        "Use only when the user explicitly requests navigation. For a previously filtered result, "
+                        "pass its exact query_objects filters and object IDs. Registered native NetBox filters are "
+                        "preserved in the list URL; object IDs are used only as a fallback for synthetic filters."
                     ),
                     input_schema={
                         "type": "object",
-                        "properties": {"object_type": object_type_schema},
+                        "properties": {
+                            "object_type": object_type_schema,
+                            "filters": {
+                                "type": "object",
+                                "additionalProperties": {
+                                    "oneOf": [
+                                        {"type": ["string", "number", "integer", "boolean", "null"]},
+                                        {
+                                            "type": "array",
+                                            "items": {"type": ["string", "number", "integer", "boolean"]},
+                                        },
+                                    ]
+                                },
+                            },
+                            "object_ids": {
+                                "type": "array",
+                                "items": {"type": "integer", "minimum": 1},
+                                "maxItems": 200,
+                                "uniqueItems": True,
+                            },
+                        },
                         "required": ["object_type"],
                         "additionalProperties": False,
                     },
@@ -409,6 +431,7 @@ class LocalCurrentUserProvider(ToolProvider):
             "get_object",
             "search_netbox",
             "navigate_to_object",
+            "navigate_to_object_list",
             "propose_create_object",
             "propose_update_object",
             "propose_bulk_update_named_objects",
@@ -666,18 +689,74 @@ class LocalCurrentUserProvider(ToolProvider):
         }
 
     def _navigate_to_object_list(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
-        self._require_arguments(arguments, {"object_type"}, {"object_type"})
+        self._require_arguments(arguments, {"object_type"}, {"object_type", "filters", "object_ids"})
         label = self._normalize_label(arguments["object_type"])
-        model, _filterset_class, _serializer_class = self._resolve(label, context)
+        model, filterset_class, _serializer_class = self._resolve(label, context)
         permission = f"{model._meta.app_label}.view_{model._meta.model_name}"
         if not context.user.has_perm(permission):
             raise ToolValidationError("The current user may not view this object type.")
+        requested_filters = arguments.get("filters") or {}
+        if not isinstance(requested_filters, dict):
+            raise ToolValidationError("filters must be a JSON object.")
+        native_filters = dict(requested_filters)
+        synthetic_filters = {}
+        if HAS_CONTACT_FILTER in native_filters and HAS_CONTACT_FILTER not in filterset_class.base_filters:
+            if not self._supports_contact_filter(model):
+                raise ToolValidationError(f"Unsupported filters: {HAS_CONTACT_FILTER}")
+            has_contact = native_filters.pop(HAS_CONTACT_FILTER)
+            if not isinstance(has_contact, bool):
+                raise ToolValidationError("has_contact must be a boolean.")
+            synthetic_filters[HAS_CONTACT_FILTER] = has_contact
+
+        queryset = self._restricted_queryset(model, context)
+        query_data = self._to_query_dict(native_filters)
+        filterset = filterset_class(data=query_data, queryset=queryset, request=context.request)
+        supported_filters = {name for name in filterset.filters if self._field_is_allowed(name)}
+        unknown_filters = set(native_filters) - supported_filters
+        if unknown_filters:
+            raise ToolValidationError(f"Unsupported filters: {', '.join(sorted(unknown_filters))}")
+        if not filterset.is_valid():
+            raise ToolValidationError(f"Invalid filters: {filterset.errors.get_json_data(escape_html=True)}")
+        try:
+            filtered_queryset = filterset.qs
+        except ValidationError as exc:
+            raise ToolValidationError(f"Invalid filters: {exc}") from exc
+
+        fallback_ids = []
+        if synthetic_filters:
+            raw_object_ids = arguments.get("object_ids")
+            if not isinstance(raw_object_ids, list) or not raw_object_ids or len(raw_object_ids) > 200:
+                raise ToolValidationError(
+                    "object_ids must contain between 1 and 200 IDs when a synthetic filter is used."
+                )
+            for object_id in raw_object_ids:
+                normalized_id = self._positive_object_id(object_id)
+                if normalized_id in fallback_ids:
+                    raise ToolValidationError("object_ids must not contain duplicates.")
+                fallback_ids.append(normalized_id)
+            if "id" not in supported_filters:
+                raise ToolValidationError("This NetBox list does not support an object ID fallback.")
+            if HAS_CONTACT_FILTER in synthetic_filters:
+                filtered_queryset = filtered_queryset.filter(
+                    contacts__isnull=not synthetic_filters[HAS_CONTACT_FILTER]
+                ).distinct()
+            matching_ids = set(filtered_queryset.filter(pk__in=fallback_ids).values_list("pk", flat=True))
+            fallback_ids = [object_id for object_id in fallback_ids if object_id in matching_ids]
+            if not fallback_ids:
+                raise ToolValidationError("The previously filtered objects no longer match or are no longer visible.")
+            query_data.setlist("id", [str(object_id) for object_id in fallback_ids])
+
         try:
             url = get_action_url(model, action="list")
         except NoReverseMatch as exc:
             raise ToolValidationError("No list page is registered for this object type.") from exc
+        if query_data:
+            url = f"{url}?{query_data.urlencode()}"
         return {
             "object_type": label,
+            "filter_mode": "entity_fallback" if synthetic_filters else "native" if native_filters else "unfiltered",
+            "native_filters": sorted(native_filters),
+            "fallback_count": len(fallback_ids),
             "client_action": {
                 "type": "navigate",
                 "url": self._safe_local_url(url),
@@ -1111,8 +1190,10 @@ class LocalCurrentUserProvider(ToolProvider):
     def _name_is_blocked(self, value: str) -> bool:
         raw = value.casefold()
         normalized = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
-        return raw in self.excluded_fields or normalized in self.excluded_fields or any(
-            term in normalized for term in NEVER_ALLOWED_NAME_FRAGMENTS
+        return (
+            raw in self.excluded_fields
+            or normalized in self.excluded_fields
+            or any(term in normalized for term in NEVER_ALLOWED_NAME_FRAGMENTS)
         )
 
     def _sanitize_serialized_value(self, value: Any, *, depth: int = 0) -> Any:
@@ -1133,8 +1214,7 @@ class LocalCurrentUserProvider(ToolProvider):
             return True
         if isinstance(value, dict):
             return any(
-                self._name_is_blocked(str(key))
-                or self._contains_blocked_nested_name(item, depth=depth + 1)
+                self._name_is_blocked(str(key)) or self._contains_blocked_nested_name(item, depth=depth + 1)
                 for key, item in value.items()
             )
         if isinstance(value, list):

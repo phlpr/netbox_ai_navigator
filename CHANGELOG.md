@@ -4,6 +4,8 @@
 
 - Add permission-verified automatic NetBox navigation for explicit commands and retain the last verified result
   targets so contextual follow-ups such as "navigate there" can be resolved safely.
+- Preserve registered NetBox filters when opening a previously filtered list and fall back to its permission-checked,
+  previously verified object IDs only for Navigator-specific filters.
 - Replace the close control with minimize/maximize controls, hide the launcher while open, and make the assistant
   window draggable within the visible NetBox interface.
 - Add localized copy controls to copy-ready fenced response blocks, automatically recognize unfenced multi-line CSV,

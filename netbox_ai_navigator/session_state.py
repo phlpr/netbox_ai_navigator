@@ -7,6 +7,7 @@ from typing import Any
 BROWSER_STORAGE_TOKEN_SESSION_KEY = "netbox_ai_navigator_browser_storage_token"  # nosec B105
 PENDING_ACTIONS_SESSION_KEY = "netbox_ai_navigator_pending_actions"
 NAVIGATION_TARGETS_SESSION_KEY = "netbox_ai_navigator_navigation_targets"
+LIST_NAVIGATION_TARGETS_SESSION_KEY = "netbox_ai_navigator_list_navigation_targets"
 
 
 def get_or_create_browser_storage_token(request) -> str:
@@ -128,7 +129,74 @@ def store_navigation_targets(request, targets: tuple[dict[str, Any], ...] | list
     session[NAVIGATION_TARGETS_SESSION_KEY] = [target for target in serializable if isinstance(target, dict)]
 
 
+def get_list_navigation_targets(request) -> list[dict[str, Any]]:
+    session = getattr(request, "session", None)
+    if session is None:
+        return []
+    targets = session.get(LIST_NAVIGATION_TARGETS_SESSION_KEY)
+    if not isinstance(targets, list):
+        return []
+    validated = []
+    for target in targets[:5]:
+        if not isinstance(target, dict):
+            continue
+        object_type = target.get("object_type")
+        filters = _sanitize_navigation_filters(target.get("filters"))
+        raw_object_ids = target.get("object_ids")
+        if (
+            not isinstance(object_type, str)
+            or not 1 <= len(object_type) <= 100
+            or filters is None
+            or not isinstance(raw_object_ids, list)
+        ):
+            continue
+        object_ids = []
+        for object_id in raw_object_ids[:200]:
+            if (
+                isinstance(object_id, bool)
+                or not isinstance(object_id, int)
+                or object_id < 1
+                or object_id in object_ids
+            ):
+                continue
+            object_ids.append(object_id)
+        if object_ids:
+            validated.append({"object_type": object_type, "filters": filters, "object_ids": object_ids})
+    return validated
+
+
+def store_list_navigation_targets(
+    request,
+    targets: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+) -> None:
+    session = getattr(request, "session", None)
+    if session is None:
+        return
+    serializable = json.loads(json.dumps(list(targets)[:5], ensure_ascii=False, default=str))
+    session[LIST_NAVIGATION_TARGETS_SESSION_KEY] = [target for target in serializable if isinstance(target, dict)]
+
+
+def _sanitize_navigation_filters(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or len(value) > 50:
+        return None
+    sanitized = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not 1 <= len(key) <= 100:
+            return None
+        values = item if isinstance(item, list) else [item]
+        if len(values) > 100 or any(
+            isinstance(nested, (dict, list))
+            or not isinstance(nested, (str, int, float, bool, type(None)))
+            or (isinstance(nested, str) and len(nested) > 500)
+            for nested in values
+        ):
+            return None
+        sanitized[key] = list(values) if isinstance(item, list) else item
+    return sanitized
+
+
 def clear_navigation_targets(request) -> None:
     session = getattr(request, "session", None)
     if session is not None:
         session.pop(NAVIGATION_TARGETS_SESSION_KEY, None)
+        session.pop(LIST_NAVIGATION_TARGETS_SESSION_KEY, None)

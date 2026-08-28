@@ -64,6 +64,8 @@ NAVIGATION_REFERENCE_RE = re.compile(
     r"\b(?:there|it|dahin|dorthin|dort|da|dies(?:e[snr]?|en)|that|this)\b",
     re.IGNORECASE,
 )
+LIST_REFERENCE_RE = re.compile(r"\b(?:list|lists|liste|listen|results?|ergebnis(?:se|liste)?)\b", re.IGNORECASE)
+FILTER_REFERENCE_RE = re.compile(r"\b(?:filter(?:ed)?|gefiltert(?:e[nrms]?)?|filterung)\b", re.IGNORECASE)
 EMPTY_TABLE_VALUES = frozenset({"", "-", "—", "n/a", "none", "null"})
 DISCOVERY_ONLY_RECORD_KEYS = frozenset({"id", "display", "display_url", "object_type"})
 MAX_AUTOMATIC_HYDRATION_OBJECTS = 20
@@ -139,6 +141,7 @@ class AgentResult:
     client_actions: tuple[dict[str, Any], ...] = ()
     pending_actions: tuple[dict[str, Any], ...] = ()
     navigation_targets: tuple[dict[str, Any], ...] = ()
+    list_navigation_targets: tuple[dict[str, Any], ...] = ()
     rejection: RejectedResponse | None = None
 
 
@@ -191,6 +194,13 @@ class AgentRuntime:
         previous_navigation_targets = (
             page_context.get("previous_navigation_targets", []) if isinstance(page_context, dict) else []
         )
+        previous_list_navigation_targets = (
+            page_context.get("previous_list_navigation_targets", []) if isinstance(page_context, dict) else []
+        )
+        previous_list_requested = bool(
+            LIST_REFERENCE_RE.search(latest_user_message)
+            and (FILTER_REFERENCE_RE.search(latest_user_message) or NAVIGATION_REFERENCE_RE.search(latest_user_message))
+        )
         ambiguous_navigation_reference = navigation_reference_requested and len(previous_navigation_targets) != 1
         model_tools = [definition.as_model_tool() for definition in self.tool_provider.list_tools(context)]
         bulk_update_requested = self._looks_like_multi_object_update_request(normalized_history[-1]["content"])
@@ -199,13 +209,9 @@ class AgentRuntime:
         )
         if bulk_update_requested and bulk_update_available:
             model_tools = [
-                tool
-                for tool in model_tools
-                if tool.get("function", {}).get("name") != "propose_update_object"
+                tool for tool in model_tools if tool.get("function", {}).get("name") != "propose_update_object"
             ]
-        available_tool_names = {
-            str(tool.get("function", {}).get("name", "")) for tool in model_tools
-        }
+        available_tool_names = {str(tool.get("function", {}).get("name", "")) for tool in model_tools}
         write_proposals_available = any(
             str(tool.get("function", {}).get("name", "")).startswith("propose_") for tool in model_tools
         )
@@ -267,6 +273,7 @@ class AgentRuntime:
         successful_data_tools: set[str] = set()
         grounding_records: list[GroundingRecord] = []
         client_actions: list[dict[str, Any]] = []
+        list_query_contexts: dict[str, dict[str, Any]] = {}
         pending_actions: list[dict[str, Any]] = []
         pending_action_identities: set[tuple[Any, ...]] = set()
         proposal_limit_exceeded = False
@@ -296,7 +303,13 @@ class AgentRuntime:
                         if tool_call.name not in available_tool_names:
                             result = {"ok": False, "error": "This tool is not available for the current request."}
                         else:
-                            result = self._execute_tool(context, tool_call.name, tool_call.arguments)
+                            tool_arguments = tool_call.arguments
+                            if tool_call.name == "navigate_to_object_list" and previous_list_requested:
+                                tool_arguments = self._reuse_list_navigation_arguments(
+                                    tool_arguments,
+                                    previous_list_navigation_targets,
+                                )
+                            result = self._execute_tool(context, tool_call.name, tool_arguments)
                         tool_result = result.get("result") if result.get("ok") else None
                         candidate_pending_actions: list[dict[str, Any]] = []
                         if isinstance(tool_result, dict):
@@ -320,12 +333,8 @@ class AgentRuntime:
                             elif single_pending_action is not None or multiple_pending_actions is not None:
                                 result = {"ok": False, "error": "The proposal tool returned an invalid preview."}
                         if candidate_pending_actions and result.get("ok"):
-                            identities = [
-                                self._pending_action_identity(action) for action in candidate_pending_actions
-                            ]
-                            if non_atomic_batch_rejected or (
-                                len(candidate_pending_actions) == 1 and pending_actions
-                            ):
+                            identities = [self._pending_action_identity(action) for action in candidate_pending_actions]
+                            if non_atomic_batch_rejected or (len(candidate_pending_actions) == 1 and pending_actions):
                                 non_atomic_batch_rejected = True
                                 pending_actions.clear()
                                 pending_action_identities.clear()
@@ -378,6 +387,8 @@ class AgentRuntime:
                         data_tool_attempted = True
                         new_records = self._grounding_records(tool_call.name, result)
                         grounding_records.extend(new_records)
+                        if tool_call.name == "query_objects":
+                            self._record_list_query_context(list_query_contexts, tool_call.arguments, result)
                         has_detail_fields = any(
                             set(record.data).difference(DISCOVERY_ONLY_RECORD_KEYS) for record in new_records
                         )
@@ -420,7 +431,10 @@ class AgentRuntime:
                         "label matching the user's wording, call navigate_to_object with its exact object_type and "
                         "object_id now. For a named target that "
                         "has not been resolved, use search_netbox first and then navigate_to_object. Use list or "
-                        "search navigation only when that is what the user explicitly requested. Never invent a URL."
+                        "search navigation only when that is what the user explicitly requested. For a previously "
+                        "filtered list, call navigate_to_object_list with the matching "
+                        "previous_list_navigation_targets object_type, filters, and object_ids unchanged. Never "
+                        "invent a URL."
                     )
                 messages.append({"role": "system", "content": instruction})
                 response = self.model_provider.complete(messages, model_tools)
@@ -567,8 +581,7 @@ class AgentRuntime:
                 answer = _("The requested change was validated and is awaiting manual confirmation.")
             else:
                 answer = _(
-                    "%(count)s requested changes were validated. Each change is awaiting separate manual "
-                    "confirmation."
+                    "%(count)s requested changes were validated. Each change is awaiting separate manual confirmation."
                 ) % {"count": len(pending_actions)}
         elif not answer:
             raise InvalidRequestError("The model did not return a final answer.")
@@ -601,9 +614,7 @@ class AgentRuntime:
                 extra={"grounding_records": len(grounding_records)},
             )
             answer = self._grounded_fallback(grounding_records)
-        elif pending_query_offset is not None and COMPLETE_LIST_REQUEST_RE.search(
-            normalized_history[-1]["content"]
-        ):
+        elif pending_query_offset is not None and COMPLETE_LIST_REQUEST_RE.search(normalized_history[-1]["content"]):
             rejection_reason = RejectionReason.GROUNDING_GUARD
             answer = _(
                 "The complete result could not be retrieved because additional result pages remain. "
@@ -639,18 +650,21 @@ class AgentRuntime:
         if (
             rejection_reason
             and rejected_response.strip()
-            and (
-                rejection_reason == RejectionReason.APPROVAL_NORMALIZATION
-                or rejected_response != answer
-            )
+            and (rejection_reason == RejectionReason.APPROVAL_NORMALIZATION or rejected_response != answer)
         ):
             rejection = RejectedResponse(reason=rejection_reason, response=rejected_response)
+        navigation_targets = self._navigation_targets(grounding_records, answer)
         return AgentResult(
             answer=answer,
             tool_calls=tool_call_count,
             client_actions=tuple(client_actions),
             pending_actions=tuple(pending_actions),
-            navigation_targets=self._navigation_targets(grounding_records, answer),
+            navigation_targets=navigation_targets,
+            list_navigation_targets=self._list_navigation_targets(
+                list_query_contexts.values(),
+                grounding_records,
+                answer,
+            ),
             rejection=rejection,
         )
 
@@ -774,12 +788,7 @@ class AgentRuntime:
         seen: set[tuple[str, int]] = set()
         for record in records:
             object_id = record.data.get("id")
-            if (
-                not record.object_type
-                or isinstance(object_id, bool)
-                or not isinstance(object_id, int)
-                or object_id < 1
-            ):
+            if not record.object_type or isinstance(object_id, bool) or not isinstance(object_id, int) or object_id < 1:
                 continue
             visible_by_url = bool(record.object_urls.intersection(answer_urls))
             visible_by_label = cls._normalize_value(record.display) in visible_answer
@@ -798,6 +807,118 @@ class AgentRuntime:
                 }
             )
             if len(targets) >= 20:
+                break
+        return tuple(targets)
+
+    @staticmethod
+    def _record_list_query_context(
+        contexts: dict[str, dict[str, Any]],
+        raw_arguments: dict[str, Any] | str,
+        execution_result: dict[str, Any],
+    ) -> None:
+        if not execution_result.get("ok") or not isinstance(execution_result.get("result"), dict):
+            return
+        try:
+            arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+        except json.JSONDecodeError:
+            return
+        result = execution_result["result"]
+        if not isinstance(arguments, dict) or not isinstance(result.get("objects"), list):
+            return
+        object_type = result.get("object_type")
+        filters = arguments.get("filters") or {}
+        if not isinstance(object_type, str) or not object_type or not isinstance(filters, dict):
+            return
+        object_ids = [
+            item.get("id")
+            for item in result["objects"]
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), int)
+            and not isinstance(item.get("id"), bool)
+            and item["id"] > 0
+        ]
+        if not object_ids:
+            return
+        try:
+            key = json.dumps(
+                {"object_type": object_type, "filters": filters},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            return
+        context = contexts.setdefault(
+            key,
+            {"object_type": object_type, "filters": filters, "object_ids": []},
+        )
+        for object_id in object_ids:
+            if object_id not in context["object_ids"] and len(context["object_ids"]) < 200:
+                context["object_ids"].append(object_id)
+
+    @staticmethod
+    def _reuse_list_navigation_arguments(
+        raw_arguments: dict[str, Any] | str,
+        previous_targets: Any,
+    ) -> dict[str, Any] | str:
+        try:
+            arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+        except json.JSONDecodeError:
+            return raw_arguments
+        if not isinstance(arguments, dict) or not isinstance(previous_targets, list):
+            return raw_arguments
+        object_type = arguments.get("object_type")
+        if not isinstance(object_type, str):
+            return raw_arguments
+        matches = [
+            target
+            for target in previous_targets
+            if isinstance(target, dict)
+            and target.get("object_type") == object_type
+            and isinstance(target.get("filters"), dict)
+            and isinstance(target.get("object_ids"), list)
+        ]
+        if len(matches) > 1 and isinstance(arguments.get("filters"), dict):
+            matches = [target for target in matches if target["filters"] == arguments["filters"]]
+        if len(matches) != 1:
+            return raw_arguments
+        resolved = dict(arguments)
+        resolved["filters"] = dict(matches[0]["filters"])
+        resolved["object_ids"] = list(matches[0]["object_ids"])
+        return resolved
+
+    @classmethod
+    def _list_navigation_targets(
+        cls,
+        contexts: Any,
+        records: list[GroundingRecord],
+        answer: str,
+    ) -> tuple[dict[str, Any], ...]:
+        answer_urls = {cls._url_key(target) for _label, target in MARKDOWN_LINK_RE.findall(answer)}
+        visible_answer = cls._normalize_value(cls._strip_markdown(answer))
+        visible_ids: dict[str, set[int]] = {}
+        for record in records:
+            object_id = record.data.get("id")
+            if not record.object_type or isinstance(object_id, bool) or not isinstance(object_id, int) or object_id < 1:
+                continue
+            if record.object_urls.intersection(answer_urls) or cls._normalize_value(record.display) in visible_answer:
+                visible_ids.setdefault(record.object_type, set()).add(object_id)
+
+        targets = []
+        for context in contexts:
+            object_type = context.get("object_type")
+            matching_ids = visible_ids.get(object_type, set())
+            object_ids = [object_id for object_id in context.get("object_ids", []) if object_id in matching_ids]
+            if not object_ids:
+                continue
+            targets.append(
+                {
+                    "object_type": object_type,
+                    "filters": context.get("filters", {}),
+                    "object_ids": object_ids,
+                }
+            )
+            if len(targets) >= 5:
                 break
         return tuple(targets)
 

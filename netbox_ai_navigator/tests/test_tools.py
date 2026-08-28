@@ -70,9 +70,7 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
 
     def test_nested_credential_fields_are_rejected_for_writes(self):
         self.assertTrue(
-            self.provider._contains_blocked_nested_name(
-                {"custom_fields": {"client_secret": "must-not-be-written"}}
-            )
+            self.provider._contains_blocked_nested_name({"custom_fields": {"client_secret": "must-not-be-written"}})
         )
         self.assertFalse(self.provider._contains_blocked_nested_name({"custom_fields": {"owner": "network-team"}}))
 
@@ -133,6 +131,7 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
 
             def __init__(self, *args, **kwargs):
                 self.filters = self.base_filters
+
         plugin_model = SimpleNamespace(
             _meta=SimpleNamespace(
                 label_lower="example_plugin.widget",
@@ -205,6 +204,7 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
         )
         query_description = next(tool.description for tool in tools if tool.name == "query_objects")
         query_tool = next(tool for tool in tools if tool.name == "query_objects")
+        list_navigation_tool = next(tool for tool in tools if tool.name == "navigate_to_object_list")
         object_type_schema = query_tool.input_schema["properties"]["object_type"]
         self.assertNotIn("enum", object_type_schema)
         self.assertEqual(object_type_schema["pattern"], "^[a-z0-9_]+\\.[a-z0-9_]+$")
@@ -213,6 +213,8 @@ class LocalCurrentUserProviderTest(SimpleTestCase):
         self.assertIn("has_contact", query_description)
         self.assertIn("returned site_id or location_id", query_description)
         self.assertIn("site and location accept registered choices", query_description)
+        self.assertIn("filters", list_navigation_tool.input_schema["properties"])
+        self.assertIn("object_ids", list_navigation_tool.input_schema["properties"])
 
     def test_unknown_tool_is_rejected(self):
         with self.assertRaises(ToolNotFoundError):

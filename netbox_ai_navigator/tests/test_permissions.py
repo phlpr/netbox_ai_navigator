@@ -214,9 +214,7 @@ class CurrentUserRBACIntegrationTest(TestCase):
             )
 
     def test_contact_filter_handles_more_than_one_result_page(self):
-        names = ["SPSQLPROD001", "SPSQLPROD002", "SPSQLPROD003"] + [
-            f"LAB-VM-{number:03d}" for number in range(4, 61)
-        ]
+        names = ["SPSQLPROD001", "SPSQLPROD002", "SPSQLPROD003"] + [f"LAB-VM-{number:03d}" for number in range(4, 61)]
         virtual_machines = VirtualMachine.objects.bulk_create(
             [VirtualMachine(name=name, status="active") for name in names]
         )
@@ -305,6 +303,41 @@ class CurrentUserRBACIntegrationTest(TestCase):
                 "navigate_to_object",
                 {"object_type": "dcim.site", "object_id": self.hidden_site.pk},
             )
+
+    def test_list_navigation_prefers_native_netbox_filters(self):
+        result = self.provider.call_tool(
+            self.context_for(self.superuser),
+            "navigate_to_object_list",
+            {
+                "object_type": "dcim.site",
+                "filters": {"status": "active"},
+                "object_ids": [self.visible_site.pk, self.hidden_site.pk],
+            },
+        )
+
+        self.assertEqual(result["filter_mode"], "native")
+        self.assertEqual(result["native_filters"], ["status"])
+        self.assertEqual(result["fallback_count"], 0)
+        self.assertIn("status=active", result["client_action"]["url"])
+        self.assertNotIn("id=", result["client_action"]["url"])
+
+    def test_list_navigation_falls_back_to_visible_ids_for_synthetic_filter(self):
+        result = self.provider.call_tool(
+            self.context_for(self.limited_user),
+            "navigate_to_object_list",
+            {
+                "object_type": "dcim.site",
+                "filters": {"has_contact": False},
+                "object_ids": [self.visible_site.pk, self.hidden_site.pk],
+            },
+        )
+
+        self.assertEqual(result["filter_mode"], "entity_fallback")
+        self.assertEqual(result["native_filters"], [])
+        self.assertEqual(result["fallback_count"], 1)
+        self.assertIn(f"id={self.visible_site.pk}", result["client_action"]["url"])
+        self.assertNotIn(f"id={self.hidden_site.pk}", result["client_action"]["url"])
+        self.assertNotIn("has_contact", result["client_action"]["url"])
 
     def test_update_is_validated_but_not_written_until_approved(self):
         proposed = self.provider.call_tool(
