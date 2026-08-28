@@ -223,7 +223,7 @@ class CurrentUserRBACIntegrationTest(TestCase):
             )
 
     def test_contact_filter_handles_more_than_one_result_page(self):
-        names = ["SPSQLPROD001", "SPSQLPROD002", "SPSQLPROD003"] + [f"LAB-VM-{number:03d}" for number in range(4, 61)]
+        names = [f"LAB-VM-{number:03d}" for number in range(1, 61)]
         virtual_machines = VirtualMachine.objects.bulk_create(
             [VirtualMachine(name=name, status="active") for name in names]
         )

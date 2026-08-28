@@ -292,7 +292,7 @@ class FakePagedVMToolProvider(ToolProvider):
             raise ToolNotFoundError(name)
         self.calls.append(arguments)
         offset = arguments.get("offset", 0)
-        names = ["SPSQLPROD001", "SPSQLPROD002"] if offset == 0 else ["LAB-VM-059"]
+        names = ["LAB-VM-001", "LAB-VM-002"] if offset == 0 else ["LAB-VM-059"]
         return {
             "object_type": "virtualization.virtualmachine",
             "returned": len(names),
@@ -520,7 +520,7 @@ class AgentRuntimeTest(SimpleTestCase):
 
         result = AgentRuntime(model, FakeWriteToolProvider(), max_pending_actions=3).run(
             self.context,
-            [{"role": "user", "content": "Set the status of SPSQLPROD001 - 003 to deleted."}],
+            [{"role": "user", "content": "Set the status of LAB-VM-001 - 003 to deleted."}],
         )
 
         self.assertEqual(
@@ -532,7 +532,7 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertEqual(result.rejection.reason, RejectionReason.PROPOSAL_GUARD)
 
     def test_requires_atomic_bulk_tool_for_compact_numeric_update_range(self):
-        names = ["SPSQLPROD001", "SPSQLPROD002", "SPSQLPROD003"]
+        names = ["LAB-VM-001", "LAB-VM-002", "LAB-VM-003"]
         model = FakeModelProvider(
             [
                 ModelResponse(
@@ -554,7 +554,7 @@ class AgentRuntimeTest(SimpleTestCase):
 
         result = AgentRuntime(model, FakeBulkWriteToolProvider()).run(
             self.context,
-            [{"role": "user", "content": "Setze den Status von SPSQLPROD001 - 003 auf deleted"}],
+            [{"role": "user", "content": "Setze den Status von LAB-VM-001 - 003 auf deleted"}],
         )
 
         exposed_tool_names = {tool["function"]["name"] for tool in model.calls[0][1]}
@@ -607,7 +607,7 @@ class AgentRuntimeTest(SimpleTestCase):
 
         result = AgentRuntime(model, FakeBulkWriteToolProvider()).run(
             self.context,
-            [{"role": "user", "content": "Setze den Status von SPSQLPROD001 - 003 auf deleted"}],
+            [{"role": "user", "content": "Setze den Status von LAB-VM-001 - 003 auf deleted"}],
         )
 
         self.assertEqual(
@@ -618,7 +618,7 @@ class AgentRuntimeTest(SimpleTestCase):
         self.assertEqual(result.pending_actions, ())
 
     def test_discards_all_proposals_when_multi_object_limit_is_exceeded(self):
-        names = ["SPSQLPROD001", "SPSQLPROD002", "SPSQLPROD003"]
+        names = ["LAB-VM-001", "LAB-VM-002", "LAB-VM-003"]
         model = FakeModelProvider(
             [
                 ModelResponse(
@@ -660,7 +660,7 @@ class AgentRuntimeTest(SimpleTestCase):
 
         result = AgentRuntime(model, FakeWriteToolProvider()).run(
             self.context,
-            [{"role": "user", "content": "Setze den Status von SPSQLPROD001 - 003 auf deleted"}],
+            [{"role": "user", "content": "Setze den Status von LAB-VM-001 - 003 auf deleted"}],
         )
 
         self.assertEqual(
@@ -710,8 +710,8 @@ class AgentRuntimeTest(SimpleTestCase):
             (
                 "| VM | ID |",
                 "| --- | --- |",
-                "| [SPSQLPROD001](http://testserver/virtualization/virtual-machines/1/) | 1 |",
-                "| [SPSQLPROD002](http://testserver/virtualization/virtual-machines/2/) | 2 |",
+                "| [LAB-VM-001](http://testserver/virtualization/virtual-machines/1/) | 1 |",
+                "| [LAB-VM-002](http://testserver/virtualization/virtual-machines/2/) | 2 |",
                 "| [LAB-VM-059](http://testserver/virtualization/virtual-machines/3/) | 3 |",
             )
         )
@@ -782,7 +782,7 @@ class AgentRuntimeTest(SimpleTestCase):
 
         result = AgentRuntime(model, FakeToolProvider()).run(
             self.context,
-            [{"role": "user", "content": "Setze den Status von SPSQLPROD001 auf deleted"}],
+            [{"role": "user", "content": "Setze den Status von LAB-VM-001 auf deleted"}],
         )
 
         self.assertEqual(

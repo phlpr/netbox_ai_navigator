@@ -65,8 +65,8 @@ class FakeBatchActionRuntime(FakeRuntime):
                 "payload": {"status": "deleted"},
                 "object_type": "virtualization.virtualmachine",
                 "object_id": object_id,
-                "title": f"Update SPSQLPROD00{object_id}",
-                "target": f"SPSQLPROD00{object_id}",
+                "title": f"Update LAB-VM-00{object_id}",
+                "target": f"LAB-VM-00{object_id}",
                 "changes": [{"field": "status", "before": "active", "after": "deleted"}],
                 "etag": f'W/"timestamp-{object_id}"',
             }
@@ -268,7 +268,7 @@ class ChatViewTest(SimpleTestCase):
         self.assertEqual(len(payload["pending_actions"]), 3)
         self.assertEqual(
             [action["target"] for action in payload["pending_actions"]],
-            ["SPSQLPROD001", "SPSQLPROD002", "SPSQLPROD003"],
+            ["LAB-VM-001", "LAB-VM-002", "LAB-VM-003"],
         )
         self.assertEqual(len({action["action_id"] for action in payload["pending_actions"]}), 3)
         self.assertNotIn("/api/virtualization/virtual-machines/", response.content.decode())
