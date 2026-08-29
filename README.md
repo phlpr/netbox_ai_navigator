@@ -59,8 +59,7 @@ AgentRuntime
            └── Confirmed REST API change proposals
 ```
 
-The `ModelProvider` and `ToolProvider` interfaces isolate future MCP, Itential, or additional model integrations from
-the UI and agent runtime.
+The `ModelProvider` and `ToolProvider` interfaces isolate provider implementations from the UI and agent runtime.
 
 ## Installation
 
