@@ -10,7 +10,7 @@ separate two-phase approval workflow and are never executed directly by the mode
 
 ## Status
 
-Version 0.4 targets NetBox 4.5.10 through 4.6.x and Python 3.12 or newer. It provides:
+Version 0.4.1 targets NetBox 4.5.10 through 4.7.x and Python 3.12 or newer. It provides:
 
 - a localized, resizable global chat window with context from the currently visible NetBox page;
 - an OpenAI-compatible provider for Chat Completions and Responses;
@@ -36,7 +36,7 @@ protocols.
 
 | Plugin Release | NetBox | Python |
 |---|---|---|
-| `0.4.x` | `4.5.10` to `4.6.x` (tested with `4.5.10` and `4.6.8`; CI uses `4.6.9`) | `3.12`, `3.13`, `3.14` |
+| `0.4.1` | `4.5.10` to `4.7.x` (CI tests `4.5.10`, `4.6.10`, and `4.7.0`) | `3.12`, `3.13`, `3.14` |
 
 ## Architecture
 
@@ -250,7 +250,7 @@ Cancel controls. Approval tokens are single-use and expire after ten minutes by 
 After confirmation, the plugin locks the target object and rechecks its ETag before dispatching the stored action
 through the registered NetBox REST ViewSet. NetBox then rechecks the current user's normal object permissions,
 serializer validation, and plugin-specific rules. Concurrent changes therefore invalidate stale proposals instead of
-being overwritten; NetBox 4.6 additionally enforces the same ETag through its REST API. Successful changes use a fixed
+being overwritten; NetBox 4.6 and newer additionally enforce the same ETag through the REST API. Successful changes use a fixed
 AI Navigator changelog message. Credential-bearing object types and fields remain blocked from both reads and writes.
 
 ## Development and tests
@@ -262,7 +262,7 @@ ruff format --check --exclude netbox_ai_navigator/migrations netbox_ai_navigator
 ruff check --exclude netbox_ai_navigator/migrations netbox_ai_navigator testing_configuration.py pyproject.toml
 ```
 
-Run the plugin test suite from a supported NetBox source checkout (4.5.10 through 4.6.x).
+Run the plugin test suite from a supported NetBox source checkout (4.5.10 through 4.7.x).
 `testing_configuration.py` adds this plugin to NetBox's standard test configuration:
 
 ```bash
@@ -274,6 +274,10 @@ python manage.py test netbox_ai_navigator.tests
 
 The RBAC integration tests create two users with different `ObjectPermission` coverage and require the normal NetBox
 PostgreSQL test database.
+
+CI runs the suite against pinned NetBox 4.5.10, 4.6.10, and 4.7.0 releases with Python 3.12, 3.13, and 3.14.
+NetBox 4.7 regression tests cover selection custom fields, config-context exclusions, service port mappings,
+hierarchical filters, cooling models, search, and Navigator assets; they are skipped on older NetBox releases.
 
 ## License
 

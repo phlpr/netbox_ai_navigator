@@ -2,7 +2,7 @@ from netbox.plugins import PluginConfig
 
 from .config import DEFAULT_SETTINGS, validate_plugin_settings
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 
 class NetBoxAINavigatorConfig(PluginConfig):
@@ -13,7 +13,7 @@ class NetBoxAINavigatorConfig(PluginConfig):
     author = "phlpr"
     base_url = "ai-navigator"
     min_version = "4.5.10"
-    max_version = "4.6.99"
+    max_version = "4.7.99"
     default_settings = DEFAULT_SETTINGS
 
     @classmethod
