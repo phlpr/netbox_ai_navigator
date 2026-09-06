@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 - 2026-09-06
+
+- Extend declared compatibility to NetBox 4.7.x while retaining the NetBox 4.5.10 minimum.
+- Test pinned NetBox 4.5.10, 4.6.10, and 4.7.0 releases across Python 3.12, 3.13, and 3.14 in CI.
+- Add NetBox 4.7 regression coverage for dynamic model discovery, selection custom fields, config-context
+  exclusions, service port mappings, hierarchical navigation, cooling models, search, and Navigator assets.
+
 ## 0.4.0 - 2026-08-28
 
 - Add permission-verified automatic NetBox navigation for explicit commands and retain the last verified result
