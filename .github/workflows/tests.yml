@@ -12,13 +12,20 @@ permissions:
 
 jobs:
   netbox-tests:
-    name: NetBox 4.6 / Python ${{ matrix.python-version }}
+    name: NetBox ${{ matrix.netbox.version }} / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
     strategy:
       fail-fast: false
       matrix:
+        netbox:
+          - version: "4.5.10"
+            ref: b78bd713294564e0421c36c936a909e64da04b8d
+          - version: "4.6.10"
+            ref: 560da79ea1213a0b8bbc9ecf4ac03714fa2071d7
+          - version: "4.7.0"
+            ref: 5f06007e4c9bacc93ce17c1e645fc1143d60df3d
         python-version:
           - "3.12"
           - "3.13"
@@ -57,7 +64,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: netbox-community/netbox
-          ref: f8b00e9aae7fab01dae1bb15ec85b95d1ba7c127 # v4.6.9
+          ref: ${{ matrix.netbox.ref }}
           path: netbox-source
           persist-credentials: false
 
