@@ -1,6 +1,7 @@
 import json
 from unittest import skipUnless
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 from core.models import ObjectType
 from dcim.models import Device, DeviceRole, DeviceType, Manufacturer, Site, SiteGroup
@@ -220,3 +221,98 @@ class NetBox47CompatibilityTest(TestCase):
                 self.assertContains(response, "netbox_ai_navigator/assistant.js")
         self.assertTrue(finders.find("netbox_ai_navigator/assistant.js"))
         self.assertTrue(finders.find("netbox_ai_navigator/assistant.css"))
+
+    @skipUnless(Version(settings.VERSION) >= Version("4.7.1"), "Requires NetBox 4.7.1 or newer.")
+    def test_collated_name_filters_and_native_navigation(self):
+        site = Site.objects.create(name="Straße", slug="strasse")
+        for lookup in ("name__ie", "name__ic", "name__isw", "name__iew"):
+            with self.subTest(lookup=lookup):
+                filters = {lookup: ["straße"]}
+                result = self.tool("query_objects", object_type="dcim.site", filters=filters)
+                self.assertEqual([item["id"] for item in result["objects"]], [site.pk])
+                target = self.tool("navigate_to_object_list", object_type="dcim.site", filters=filters)
+                self.assertEqual(target["filter_mode"], "native")
+                query = parse_qs(urlsplit(target["client_action"]["url"]).query)
+                self.assertEqual(query[lookup], ["straße"])
+
+    @skipUnless(Version(settings.VERSION) >= Version("4.7.1"), "Requires NetBox 4.7.1 or newer.")
+    def test_multiselect_negation_and_native_navigation(self):
+        self.make_custom_fields()
+        live = VirtualMachine.objects.create(
+            name="REVIEW-LIVE-ONLY", site=self.site, custom_field_data={"purposes": ["live"]}
+        )
+        empty = VirtualMachine.objects.create(name="REVIEW-UNSET", site=self.site)
+        null = VirtualMachine.objects.create(
+            name="REVIEW-NULL", site=self.site, custom_field_data={"purposes": None}
+        )
+        for values, expected in [
+            (["stage"], {live.pk, empty.pk, null.pk}),
+            (["stage", "live"], {empty.pk, null.pk}),
+        ]:
+            with self.subTest(values=values):
+                filters = {"cf_purposes__n": values}
+                result = self.tool("query_objects", object_type="virtualization.virtualmachine", filters=filters)
+                self.assertEqual({item["id"] for item in result["objects"]}, expected)
+                target = self.tool(
+                    "navigate_to_object_list", object_type="virtualization.virtualmachine", filters=filters
+                )
+                self.assertEqual(target["filter_mode"], "native")
+                query = parse_qs(urlsplit(target["client_action"]["url"]).query)
+                self.assertEqual(query["cf_purposes__n"], values)
+
+    @skipUnless(Version(settings.VERSION) >= Version("4.7.1"), "Requires NetBox 4.7.1 or newer.")
+    def test_confirmed_hierarchy_move_cascades_to_descendants(self):
+        original = SiteGroup.objects.create(name="Original root", slug="original-root")
+        destination = SiteGroup.objects.create(name="Destination root", slug="destination-root")
+        child = SiteGroup.objects.create(name="Original child", slug="original-child", parent=original)
+        leaf = SiteGroup.objects.create(name="Leaf", slug="leaf", parent=child)
+        self.site.group = leaf
+        self.site.save()
+
+        proposal = self.tool(
+            "propose_update_object",
+            object_type="dcim.sitegroup",
+            object_id=child.pk,
+            data={"name": "Renamed child", "parent": destination.pk},
+        )
+        child.refresh_from_db()
+        self.assertEqual(child.parent_id, original.pk)
+        self.assertEqual(child.name, "Original child")
+        self.approve(proposal["pending_action"])
+
+        leaf.refresh_from_db()
+        self.assertEqual(list(leaf.get_ancestors().values_list("pk", flat=True)), [destination.pk, child.pk])
+        self.assertIn("Renamed child", leaf.sort_path)
+        for group, expected in [(original, []), (destination, [self.site.pk])]:
+            with self.subTest(group=group.name):
+                result = self.tool("query_objects", object_type="dcim.site", filters={"group_id": group.pk})
+                self.assertEqual([item["id"] for item in result["objects"]], expected)
+
+    @skipUnless(Version(settings.VERSION) >= Version("4.7.1"), "Requires NetBox 4.7.1 or newer.")
+    def test_vlan_translation_standard_serializer_fields(self):
+        policy = apps.get_model("ipam", "VLANTranslationPolicy").objects.create(name="Review translation")
+        rule = apps.get_model("ipam", "VLANTranslationRule").objects.create(
+            policy=policy, local_vid=100, remote_vid=200
+        )
+        for label, instance in [("ipam.vlantranslationpolicy", policy), ("ipam.vlantranslationrule", rule)]:
+            with self.subTest(object_type=label):
+                description = self.tool("describe_object_type", object_type=label)
+                fields = ["tags", "custom_fields", "created", "last_updated"]
+                self.assertTrue(set(fields).issubset(description["output_fields"]))
+                result = self.tool("get_object", object_type=label, object_id=instance.pk, fields=fields)
+                self.assertEqual(result["object"]["tags"], [])
+                self.assertEqual(result["object"]["custom_fields"], {})
+                self.assertIsNotNone(result["object"]["created"])
+                self.assertIsNotNone(result["object"]["last_updated"])
+
+    @skipUnless(Version(settings.VERSION) >= Version("4.7.1"), "Requires NetBox 4.7.1 or newer.")
+    def test_corrected_serializer_required_fields(self):
+        for label, field_name in [("vpn.l2vpn", "type"), ("dcim.racktype", "form_factor")]:
+            with self.subTest(object_type=label):
+                description = self.tool("describe_object_type", object_type=label)
+                fields = {field["name"]: field for field in description["writable_fields"]}
+                self.assertTrue(fields[field_name]["required"])
+        with self.assertRaises(ToolValidationError):
+            self.tool(
+                "propose_create_object", object_type="vpn.l2vpn", data={"name": "Review VPN", "slug": "review-vpn"}
+            )

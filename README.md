@@ -36,7 +36,7 @@ protocols.
 
 | Plugin Release | NetBox | Python |
 |---|---|---|
-| `0.4.1` | `4.5.10` to `4.7.x` (CI tests `4.5.10`, `4.6.10`, and `4.7.0`) | `3.12`, `3.13`, `3.14` |
+| `0.4.1` | `4.5.10` to `4.7.x` (CI tests `4.5.10`, `4.6.10`, and `4.7.1`) | `3.12`, `3.13`, `3.14` |
 
 ## Architecture
 
@@ -275,7 +275,7 @@ python manage.py test netbox_ai_navigator.tests
 The RBAC integration tests create two users with different `ObjectPermission` coverage and require the normal NetBox
 PostgreSQL test database.
 
-CI runs the suite against pinned NetBox 4.5.10, 4.6.10, and 4.7.0 releases with Python 3.12, 3.13, and 3.14.
+CI runs the suite against pinned NetBox 4.5.10, 4.6.10, and 4.7.1 releases with Python 3.12, 3.13, and 3.14.
 NetBox 4.7 regression tests cover selection custom fields, config-context exclusions, service port mappings,
 hierarchical filters, cooling models, search, and Navigator assets; they are skipped on older NetBox releases.
 

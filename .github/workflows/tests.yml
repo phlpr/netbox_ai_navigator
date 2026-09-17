@@ -24,8 +24,8 @@ jobs:
             ref: b78bd713294564e0421c36c936a909e64da04b8d
           - version: "4.6.10"
             ref: 560da79ea1213a0b8bbc9ecf4ac03714fa2071d7
-          - version: "4.7.0"
-            ref: 5f06007e4c9bacc93ce17c1e645fc1143d60df3d
+          - version: "4.7.1"
+            ref: abccf4e03650fecd366e676b392729320258c49e
         python-version:
           - "3.12"
           - "3.13"

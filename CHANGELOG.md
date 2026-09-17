@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Verify NetBox 4.7.1 with all 152 plugin tests on Python 3.12, 3.13, and 3.14; update the pinned 4.7 CI target.
+- Add regression coverage for collated name filters, negated multiselect custom fields, confirmed hierarchy changes,
+  VLAN translation serializer fields, and required write fields.
+- Document the NetBox 4.7.1 hierarchy-trigger restore caveat. Plugin runtime code, schema, and compatibility bounds
+  remain unchanged.
+
 ## 0.4.1 - 2026-09-06
 
 - Extend declared compatibility to NetBox 4.7.x while retaining the NetBox 4.5.10 minimum.
